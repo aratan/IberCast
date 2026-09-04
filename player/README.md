@@ -15,7 +15,19 @@ npm run dev
 Parámetros URL:
 
 - `?cid=<CID>` — CID raíz del manifiesto publicado por `ibercastd`.
-- `?gw=<url>` — gateway HTTP de respaldo (por defecto `https://ipfs.io`).
+- `?gw=<url>` — gateway HTTP de respaldo (por defecto `https://ipfs.io`;
+  en pruebas, `gateway.pinata.cloud` evita los 429 de ipfs.io).
+- `?nop2p=1` — modo solo-gateway: sin nodo Helia (E2E y entornos sin WebRTC).
+- `?debug=1` — logging interno de hls.js en consola.
+
+Degradación elegante: si el nodo Helia no llega a `started` (p. ej. IPv6
+roto en sandboxes), la reproducción continúa solo por gateway en vez de
+fallar.
+
+> **Nota de codecs:** en headless, usar **Chrome for Testing** o Chrome
+> branded. El chromium open-source no trae H.264/AAC y falla con
+> `fragParsingError`. El loader delega las respuestas HTTP en el `XhrLoader`
+> de hls.js para que el gateway se comporte idéntico a hls.js puro.
 
 ## Cómo funciona
 

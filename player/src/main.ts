@@ -146,7 +146,8 @@ async function play(cid: string): Promise<void> {
     // node == null => loader en modo solo-gateway (nop2p o fallo de arranque)
     loader: createIberLoader(node, cid, stats),
     enableWorker: false,
-    progressive: false
+    progressive: false,
+    debug: params.get('debug') === '1'
   })
 
   hls.on(Events.MANIFEST_PARSED, (_e, data) => {

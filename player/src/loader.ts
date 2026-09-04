@@ -1,21 +1,21 @@
 import { CID } from 'multiformats/cid'
-import { LoadStats } from 'hls.js'
-import type { UnixFS } from '@helia/unixfs'
+import { LoadStats, XhrLoader } from 'hls.js'
 import type {
   HlsConfig,
   Loader,
   LoaderCallbacks,
   LoaderConfiguration,
   LoaderContext,
-  LoaderResponse,
-  LoaderStats
+  LoaderResponse
 } from 'hls.js'
+import type { UnixFS } from '@helia/unixfs'
 import type { IberNode } from './node'
 
 /**
- * Custom hls.js loader: resolves HLS manifests and segments from the IPFS
- * network (bitswap over WebRTC/WebSockets) before falling back to an HTTP
- * gateway.
+ * Custom hls.js loader: tries cache + IPFS P2P (bitswap over
+ * WebRTC/WebSockets) first, then falls back to hls.js's stock XhrLoader so
+ * every gateway response is byte-for-byte identical to plain hls.js (the
+ * XhrLoader handles responseType, ranges, retries and callbacks).
  *
  * Path mapping published by ibercastd:
  *   <rootCID>/master.m3u8           -> HLS master manifest
@@ -23,8 +23,8 @@ import type { IberNode } from './node'
  *   <rootCID>/v<quality>/seg-<n>.ts -> media segment
  *
  * All URIs hls.js asks for resolve under /ipfs/<rootCID>/... (the master
- * manifest URL is loaded with that prefix and hls.js keeps playlist URLs
- * relative), so this loader just strips the prefix to get the UnixFS path.
+ * manifest URL carries that prefix and hls.js keeps playlist URLs relative),
+ * so the P2P layer just strips the prefix to get the UnixFS path.
  */
 
 export interface FetchStats {
@@ -48,33 +48,6 @@ export function newFetchStats(): FetchStats {
 }
 
 const P2P_TIMEOUT_MS = 8_000
-const HTTP_TIMEOUT_MS = 20_000
-
-/** Shared segment cache — survives across loader instances and play() calls. */
-const CACHE_MAX_BYTES = 100 * 1024 * 1024 // 100 MB
-let cacheBytes = 0
-const cache = new Map<string, Uint8Array>()
-
-function cacheSet(key: string, value: Uint8Array): void {
-  cache.set(key, value)
-  cacheBytes += value.byteLength
-  // Evict oldest entries when over budget
-  while (cacheBytes > CACHE_MAX_BYTES && cache.size > 1) {
-    const oldest = cache.keys().next().value!
-    const evicted = cache.get(oldest)!
-    cache.delete(oldest)
-    cacheBytes -= evicted.byteLength
-  }
-}
-
-/** Clear the segment cache (e.g. when changing CID). */
-export function clearCache(): void {
-  cache.clear()
-  cacheBytes = 0
-}
-
-/** Reusable TextDecoder for manifest/playlist text payloads. */
-const textDecoder = new TextDecoder()
 
 /** Combine an external signal with a timeout into one controller. */
 function withTimeout(signal: AbortSignal | undefined, ms: number): AbortController {
@@ -84,12 +57,7 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortControll
     if (signal.aborted) controller.abort()
     else signal.addEventListener('abort', onAbort, { once: true })
   }
-  const timerId = setTimeout(() => controller.abort(), ms)
-  // Clean up external listener and timer when the controller fires
-  controller.signal.addEventListener('abort', () => {
-    clearTimeout(timerId)
-    signal?.removeEventListener('abort', onAbort)
-  }, { once: true })
+  setTimeout(() => controller.abort(), ms)
   return controller
 }
 
@@ -101,8 +69,7 @@ async function fetchViaP2P(
   signal?: AbortSignal
 ): Promise<Uint8Array> {
   const controller = withTimeout(signal, P2P_TIMEOUT_MS)
-  // Dual-multiformats copy in the tree: align the CID type with the one
-  // @helia/unixfs expects.
+  // Dual-multiformats copy in the tree: align CID type with @helia/unixfs.
   const root = CID.parse(rootCid) as unknown as Parameters<UnixFS['cat']>[0]
   const chunks: Uint8Array[] = []
   for await (const chunk of node.unixfs.cat(root, {
@@ -121,161 +88,159 @@ async function fetchViaP2P(
   return out
 }
 
-/** Fetch over an HTTP gateway. */
-async function fetchViaHTTP(
-  gatewayUrl: string,
-  signal?: AbortSignal
-): Promise<Uint8Array> {
-  const controller = withTimeout(signal, HTTP_TIMEOUT_MS)
-  const res = await fetch(gatewayUrl, { signal: controller.signal })
-  if (!res.ok) throw new Error(`gateway HTTP ${res.status}`)
-  return new Uint8Array(await res.arrayBuffer())
-}
-
-/** Contexts whose payload hls.js expects as text, not binary. */
-function isTextContext(ctx: LoaderContext): boolean {
-  return (
-    ctx.responseType === 'text' ||
-    ctx.type === 'manifest' ||
-    ctx.type === 'level' ||
-    ctx.type === 'audioTrack' ||
-    ctx.type === 'subtitleTrack'
-  )
-}
-
 /**
- * Returns a hls.js loader constructor bound to the given Helia node and
- * root CID. Used for both playlists (config.loader) and fragments unless
- * fLoader/pLoader are overridden separately.
+ * Loader constructor bound to a Helia node + root CID. With node == null
+ * (nop2p mode or failed startup) it is a thin cache wrapper around the
+ * stock XhrLoader.
  */
 export function createIberLoader(
   node: IberNode | null,
   rootCid: string,
   fetchStats: FetchStats
 ): HlsConfig['loader'] {
+  const cache = new Map<string, Uint8Array>()
+
   return class IberLoader implements Loader<LoaderContext> {
     context: LoaderContext | null = null
-    stats: LoaderStats = new LoadStats()
+    stats = new LoadStats()
+    private config: HlsConfig
     private controller: AbortController | null = null
-    private callbacks: LoaderCallbacks<LoaderContext> | null = null
+    private xhr: Loader<LoaderContext> | null = null
 
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    constructor(_config: HlsConfig) {}
+    constructor(config: HlsConfig) {
+      this.config = config
+    }
 
     load(
       context: LoaderContext,
-      _config: LoaderConfiguration,
+      config: LoaderConfiguration,
       callbacks: LoaderCallbacks<LoaderContext>
     ): void {
       this.context = context
-      this.callbacks = callbacks
       this.controller = new AbortController()
       this.stats = new LoadStats()
-      void this.run(context)
+      void this.run(context, config, callbacks)
     }
 
-    private async run(context: LoaderContext): Promise<void> {
-      if (!this.callbacks) return
-
-      // /ipfs/<rootCID>/v0/seg-1.ts -> v0/seg-1.ts
-      let path = context.url.split('?')[0]
-      const m = path.match(/\/ipfs\/[^/]+\/?(.*)$/)
-      path = m ? m[1] : path.replace(/^https?:\/\/[^/]+\//, '')
-
+    private async run(
+      context: LoaderContext,
+      config: LoaderConfiguration,
+      callbacks: LoaderCallbacks<LoaderContext>
+    ): Promise<void> {
       const isFrag = context.type === 'media-fragment'
-      let data: Uint8Array | null = null
-      let source = ''
 
-      // 1. in-memory cache
-      const hit = cache.get(path)
+      // 1. in-memory cache (only full-object requests can be served locally)
+      const key = context.url.split('?')[0]
+      const hit = context.rangeStart === undefined ? cache.get(key) : undefined
       if (hit) {
-        data = hit
-        source = 'cache'
         fetchStats.segmentsCache++
+        fetchStats.lastSource = 'cache'
+        this.deliver(context, callbacks, hit)
+        return
       }
 
-      // 2. P2P over bitswap/WebRTC. Skipped when running gateway-only
-      // (node == null), when the node never fully started, or when there
-      // are no peers yet — nobody to ask, so don't pay the timeout.
-      if (!data && node !== null && node.started && node.peerCount() > 0) {
+      // 2. P2P over bitswap/WebRTC: skipped gateway-only (node == null), when
+      // the node never fully started, or when there are no peers yet.
+      const canP2P =
+        node !== null &&
+        node.started &&
+        node.peerCount() > 0 &&
+        context.rangeStart === undefined
+      if (canP2P && node !== null) {
+        const p2pNode = node
         try {
-          data = await fetchViaP2P(node, rootCid, path, this.controller?.signal)
-          source = 'p2p'
+          const m = key.match(/\/ipfs\/[^/]+\/?(.*)$/)
+          const path = m
+            ? m[1]
+            : key.replace(/^https?:\/\/[^/]+\//, '')
+          const data = await fetchViaP2P(p2pNode, rootCid, path, this.controller?.signal)
           fetchStats.bytesP2P += data.byteLength
           if (isFrag) fetchStats.segmentsP2P++
-          cacheSet(path, data)
-        } catch (err) {
-          console.warn(`[IberCast] P2P failed for ${path}:`, err)
+          fetchStats.lastSource = 'p2p'
+          cache.set(key, data)
+          this.deliver(context, callbacks, data)
+          return
+        } catch {
           /* fall through to gateway */
         }
       }
 
-      // 3. HTTP gateway fallback
-      if (!data) {
-        try {
-          data = await fetchViaHTTP(context.url, this.controller?.signal)
-          source = 'gateway'
-          fetchStats.bytesHTTP += data.byteLength
-          if (isFrag) fetchStats.segmentsHTTP++
-          cacheSet(path, data)
-        } catch (err) {
-          const aborted = this.controller?.signal.aborted ?? false
-          fetchStats.lastSource = aborted ? 'abort' : 'error'
-          this.callbacks.onError(
-            {
-              code: aborted ? -1 : 400,
-              text: err instanceof Error ? err.message : String(err)
-            },
-            context,
-            null,
-            this.stats
-          )
-          return
+      // 3. gateway via stock XhrLoader: identical behaviour to plain hls.js.
+      const xhr = new XhrLoader(this.config)
+      this.xhr = xhr
+      xhr.load(context, config, this.wrapCallbacks(context, callbacks))
+    }
+
+    /** Records gateway stats and caches successful full responses. */
+    private wrapCallbacks(
+      context: LoaderContext,
+      callbacks: LoaderCallbacks<LoaderContext>
+    ): LoaderCallbacks<LoaderContext> {
+      const isFrag = context.type === 'media-fragment'
+      return {
+        ...callbacks,
+        onSuccess: (response, stats, ctx, networkDetails) => {
+          const raw = response.data
+          if (raw !== undefined) {
+            const bytes =
+              raw instanceof ArrayBuffer
+                ? new Uint8Array(raw)
+                : typeof raw === 'string'
+                  ? new TextEncoder().encode(raw)
+                  : new Uint8Array(0)
+            if (bytes.byteLength > 0) {
+              fetchStats.bytesHTTP += bytes.byteLength
+              if (isFrag) fetchStats.segmentsHTTP++
+              fetchStats.lastSource = 'gateway'
+              if (context.rangeStart === undefined) cache.set(key(context), bytes)
+            }
+          }
+          callbacks.onSuccess(response, stats, ctx, networkDetails)
+        },
+        onError: (error, ctx, networkDetails, stats) => {
+          fetchStats.lastSource = 'error'
+          callbacks.onError(error, ctx, networkDetails, stats)
         }
       }
 
-      if (!data) {
-        const msg = `No data resolved for path "${path}"`
-        fetchStats.lastSource = 'error'
-        this.callbacks.onError({ code: 500, text: msg }, context, null, this.stats)
-        return
+      function key(ctx: LoaderContext): string {
+        return ctx.url.split('?')[0]
       }
+    }
 
-      fetchStats.lastSource = source
+    /** Feed cached/P2P bytes to hls.js exactly as the XhrLoader would. */
+    private deliver(
+      context: LoaderContext,
+      callbacks: LoaderCallbacks<LoaderContext>,
+      data: Uint8Array
+    ): void {
       let payload: string | ArrayBuffer
-      if (isTextContext(context)) {
-        payload = textDecoder.decode(data)
-      } else if (
-        context.rangeStart !== undefined &&
-        context.rangeEnd !== undefined
+      if (
+        context.responseType === 'text' ||
+        context.type === 'manifest' ||
+        context.type === 'level' ||
+        context.type === 'audioTrack' ||
+        context.type === 'subtitleTrack'
       ) {
-        const sliced = data.subarray(context.rangeStart, context.rangeEnd)
-        payload = sliced.buffer.slice(
-          sliced.byteOffset,
-          sliced.byteOffset + sliced.byteLength
-        ) as ArrayBuffer
+        payload = new TextDecoder().decode(data)
       } else {
-        payload = data.buffer.slice(
-          data.byteOffset,
-          data.byteOffset + data.byteLength
-        ) as ArrayBuffer
+        payload = data.slice().buffer as ArrayBuffer
       }
-
       this.stats.total = data.byteLength
       this.stats.loaded = data.byteLength
-
       const response: LoaderResponse = { url: context.url, data: payload }
-      this.callbacks.onSuccess(response, this.stats, context, null)
+      callbacks.onSuccess(response, this.stats, context, null)
     }
 
     abort(): void {
       this.controller?.abort()
+      this.xhr?.abort()
     }
 
     destroy(): void {
       this.controller?.abort()
+      this.xhr?.destroy()
       this.context = null
-      this.callbacks = null
     }
   }
 }
