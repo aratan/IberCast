@@ -59,32 +59,115 @@
     #activity.err { color: #e0655c; }
     #activity.err .dot { background: #e0655c; opacity: 1; }
     @keyframes blink { 50% { opacity: .25; } }
+
+    /* Dashboard styles */
+    #dashboard-root { display: none; width: min(880px, 100%); margin-top: 16px; }
+    #dashboard-root .dashboard-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+    #dashboard-root .tab {
+      padding: 8px 16px; border-radius: 6px; border: 1px solid #233140;
+      background: #101820; color: #7d8b9c; cursor: pointer; font-size: .85rem;
+    }
+    #dashboard-root .tab.active { background: #4cc38a; color: #06281a; font-weight: 700; }
+    #dashboard-root .dashboard-view { display: none; }
+    #dashboard-root .dashboard-view.active { display: block; }
+    #dashboard-root .channel-selector { margin-bottom: 12px; }
+    #dashboard-root .channel-selector label { color: #7d8b9c; font-size: .82rem; margin-right: 6px; }
+    #dashboard-root .channel-selector select {
+      padding: 6px 10px; border-radius: 6px; border: 1px solid #233140;
+      background: #101820; color: #dbe4ee; font-size: .85rem;
+    }
+
+    /* Catalogue */
+    .catalogue-list { display: flex; flex-direction: column; gap: 6px; }
+    .catalogue-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; border-radius: 8px; border: 1px solid #1a2530; background: #101820;
+    }
+    .catalogue-title { font-size: .9rem; font-weight: 600; }
+    .catalogue-meta { font-size: .75rem; color: #7d8b9c; flex: 1; }
+    .catalogue-delete {
+      padding: 4px 8px; border-radius: 4px; border: 1px solid #44202a;
+      background: #2a1520; color: #e0655c; cursor: pointer; font-size: .75rem;
+    }
+    .catalogue-upload {
+      margin-top: 12px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    }
+    .catalogue-upload input[type="text"] {
+      flex: 1; min-width: 150px; padding: 8px 10px; border-radius: 6px;
+      border: 1px solid #233140; background: #101820; color: #dbe4ee; font-size: .85rem;
+    }
+    .catalogue-upload input[type="file"] { font-size: .8rem; color: #7d8b9c; }
+    .upload-status { font-size: .78rem; margin-left: 8px; }
+    .upload-status.busy { color: #e0a84c; }
+    .upload-status.ok { color: #4cc38a; }
+    .upload-status.err { color: #e0655c; }
+    .empty-state { color: #7d8b9c; font-size: .85rem; padding: 16px; text-align: center; }
+
+    /* Schedule grid */
+    .schedule-grid {
+      display: grid; grid-template-columns: auto repeat(7, 1fr);
+      gap: 1px; font-size: .75rem; overflow-x: auto;
+    }
+    .grid-header .corner { border-bottom: 1px solid #233140; }
+    .day-header {
+      padding: 6px 4px; text-align: center; font-weight: 700; color: #7d8b9c;
+      border-bottom: 1px solid #233140; border-left: 1px solid #1a2530;
+    }
+    .hour-label {
+      padding: 4px 8px; color: #7d8b9c; text-align: right;
+      border-bottom: 1px solid #1a2530; font-variant-numeric: tabular-nums;
+    }
+    .grid-cell {
+      padding: 4px; min-height: 28px; border-bottom: 1px solid #1a2530;
+      border-left: 1px solid #1a2530; background: #0d1520; color: #8fa3b8;
+      word-break: break-word; cursor: pointer; font-size: .7rem;
+    }
+    .grid-cell:hover { background: #151f2c; }
+    .grid-cell.drop-hover { background: #1a3040; border-color: #4cc38a; }
+    .schedule-toast {
+      margin-top: 8px; padding: 8px 12px; border-radius: 6px; font-size: .82rem;
+    }
+    .schedule-toast.err { background: #2a1520; color: #e0655c; }
+    .schedule-toast.ok { background: #0a2818; color: #4cc38a; }
+    .schedule-toast.hidden { display: none; }
   </style>
 </head>
 <body>
   <h1>Iber<span>Cast</span></h1>
   <div class="sub">Streaming P2P sobre IPFS — cada espectador reparte fragmentos vía WebRTC</div>
 
-  <div class="bar">
-    <input id="cid" type="text" placeholder="CID raíz del manifiesto HLS (bafy... o Qm...)" />
-    <button id="go">Reproducir</button>
+  <!-- Dashboard root (?mode=dashboard) -->
+  <div id="dashboard-root"></div>
+
+  <!-- Viewer mode (?mode=viewer) — auto-plays from parrilla -->
+  <div id="viewer" style="display:none">
+    <video id="video-viewer" controls autoplay playsinline></video>
+    <div id="status-viewer">Cargando parrilla…</div>
   </div>
 
-  <video id="video" controls playsinline></video>
-  <div id="status">Introduce un CID publicado con ibercastd y pulsa Reproducir.</div>
+  <!-- Legacy mode (default) — manual CID input -->
+  <div id="legacy">
+    <div class="bar">
+      <input id="cid" type="text" placeholder="CID raíz del manifiesto HLS (bafy... o Qm...)" />
+      <button id="go">Reproducir</button>
+    </div>
 
-  <div class="hud">
-    <div class="card"><div class="k">Peers conectados</div><div class="v" id="m-peers">–</div></div>
-    <div class="card"><div class="k">Segmentos P2P</div><div class="v p2p" id="m-p2p">0</div></div>
-    <div class="card"><div class="k">Vía gateway (HTTP)</div><div class="v http" id="m-http">0</div></div>
-    <div class="card"><div class="k">Desde caché local</div><div class="v cache" id="m-cache">0</div></div>
-    <div class="card"><div class="k">Bytes P2P</div><div class="v" id="m-bytes-p2p">0 B</div></div>
-    <div class="card"><div class="k">Bytes HTTP</div><div class="v" id="m-bytes-http">0 B</div></div>
+    <video id="video" controls playsinline></video>
+    <div id="status">Introduce un CID publicado con ibercastd y pulsa Reproducir.</div>
+
+    <div class="hud">
+      <div class="card"><div class="k">Peers conectados</div><div class="v" id="m-peers">–</div></div>
+      <div class="card"><div class="k">Segmentos P2P</div><div class="v p2p" id="m-p2p">0</div></div>
+      <div class="card"><div class="k">Vía gateway (HTTP)</div><div class="v http" id="m-http">0</div></div>
+      <div class="card"><div class="k">Desde caché local</div><div class="v cache" id="m-cache">0</div></div>
+      <div class="card"><div class="k">Bytes P2P</div><div class="v" id="m-bytes-p2p">0 B</div></div>
+      <div class="card"><div class="k">Bytes HTTP</div><div class="v" id="m-bytes-http">0 B</div></div>
+    </div>
+
+    <footer>Último segmento resuelto por: <span id="m-last">–</span></footer>
+
+    <div id="activity"><span class="dot"></span><span id="activity-txt">Cargando…</span></div>
   </div>
-
-  <footer>Último segmento resuelto por: <span id="m-last">–</span></footer>
-
-  <div id="activity"><span class="dot"></span><span id="activity-txt">Cargando…</span></div>
 
   <script type="module" src="/src/main.ts"></script>
 </body>
