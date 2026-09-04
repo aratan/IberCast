@@ -68,7 +68,8 @@ de banda ancha del origin a cambios de eficiencia de red.
 
 ### Fase 0 — Fundaciones
 - [x] Repo, git init y estructura de carpetas.
-- [ ] CI básica (GitHub Actions: typecheck + build).
+- [x] Documentación de arquitectura y flujos (docs/, con diagramas Mermaid).
+- [x] CI básica (GitHub Actions: typecheck + build player; daemon en guard).
 
 ### Fase 1 — Pipeline VOD
 - [ ] CLI/API `ibercastd`: subir vídeo → HLS con FFmpeg (3 calidades).
@@ -88,14 +89,22 @@ de banda ancha del origin a cambios de eficiencia de red.
 - [ ] Live streaming con HLS corto ( ventanas de 4–6 s ) + LMDS opcional.
 - [ ] Autenticación de operador y multi-tenant.
 
-## Estructura del repo (prevista)
+## Documentación
+
+- [docs/architecture.md](docs/architecture.md) — arquitectura del sistema,
+  flujos de publicación y reproducción, diagramas (Mermaid), ADRs.
+- [docs/workflow.md](docs/workflow.md) — flujo de trabajo de desarrollo,
+  verificación E2E y CI.
+
+## Estructura del repo
 
 ```
 IberCast/
-├── ibercastd/        # daemon Go: ingest, HLS, IPFS publish, API
-├── player/           # cliente TS: Helia + hls.js loader P2P
-├── deploy/           # docker/systemd, ejemplos de config
-└── docs/             # decisiones de diseño (ADRs cortos)
+├── ibercastd/        # daemon Go: ingest, HLS, IPFS publish, API (Fase 1)
+├── player/           # cliente TS: Helia + hls.js loader P2P (Fase 2)
+├── scripts/          # e2e.mjs: verificación contra fixtures públicos
+├── docs/             # arquitectura y flujos de trabajo
+└── .github/          # CI (typecheck+build player, go test daemon)
 ```
 
 ## Cómo probar (cuando exista el código)
