@@ -66,19 +66,21 @@ de banda ancha del origin a cambios de eficiencia de red.
 
 ## Roadmap
 
-### Fase 0 — Fundaciones (actual)
-- [ ] Repo, CI básica y estructura de carpetas.
+### Fase 0 — Fundaciones
+- [x] Repo, git init y estructura de carpetas.
+- [ ] CI básica (GitHub Actions: typecheck + build).
 
 ### Fase 1 — Pipeline VOD
 - [ ] CLI/API `ibercastd`: subir vídeo → HLS con FFmpeg (3 calidades).
 - [ ] Empaquetado de la salida HLS a CAR y publicación en IPFS (Kubo RPC).
 - [ ] Endpoint que devuelve el CID raíz del manifiesto.
 
-### Fase 2 — Reproductor P2P
-- [ ] `player` en TS con Helia (navegador) + bitswap.
-- [ ] Loader custom de hls.js: resolver segmentos `segment-N.ts` por CID.
-- [ ] Fallback transparente a gateway HTTP si P2P no responde a tiempo.
-- [ ] Métricas: % de bytes servidos por P2P vs origin.
+### Fase 2 — Reproductor P2P *(scaffold listo, build verificado)*
+- [x] `player` en TS con Helia (navegador) + bitswap.
+- [x] Loader custom de hls.js: resolver segmentos por path UnixFS.
+- [x] Fallback transparente a gateway HTTP si P2P no responde a tiempo.
+- [x] Métricas: segmentos/bytes servidos por P2P vs gateway vs caché.
+- [ ] Verificación E2E con un vídeo publicado por `ibercastd` (bloqueada por Fase 1).
 
 ### Fase 3 — Producción
 - [ ] Seed nodes con proved plumbing (systemd/docker).

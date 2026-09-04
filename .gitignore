@@ -2,9 +2,7 @@
 *.exe
 *.test
 *.out
-/bin/
-/dist/
-ibercastd
+/ibercastd/bin/
 
 # --- Node / player ---
 node_modules/
@@ -12,10 +10,6 @@ node_modules/
 *.tsbuildinfo
 
 # --- Media temporales (ffmpeg output) ---
-*.ts
-*.m3u8
-*.m4s
-!docs/**
 /media/
 *.mp4
 
@@ -29,3 +23,6 @@ node_modules/
 Thumbs.db
 .idea/
 .vscode/
+
+# --- Build output ---
+dist/
