@@ -26,9 +26,13 @@ const BOOTSTRAPPERS = [
 export interface IberNode {
   helia: Helia
   unixfs: UnixFS
+  /** true when the node reached 'started' within the wait window */
+  started: boolean
   peerCount: () => number
   stop: () => Promise<void>
 }
+
+const START_WAIT_MS = 15_000
 
 export async function createIberNode(): Promise<IberNode> {
   const helia = await createHelia({
@@ -52,12 +56,23 @@ export async function createIberNode(): Promise<IberNode> {
     }
   })
 
+  // createHelia resolves while internal services may still be starting.
+  // Wait a bounded time for 'started'; if the environment can't complete
+  // startup (e.g. broken IPv6/DNS in CI sandboxes), degrade gracefully:
+  // P2P stays disabled and playback continues gateway-only.
+  const deadline = Date.now() + START_WAIT_MS
+  while (helia.status !== 'started' && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  const started = helia.status === 'started'
+
   const fs = unixfs(helia)
 
   return {
     helia,
     unixfs: fs,
-    peerCount: () => helia.libp2p.getConnections().length,
+    started,
+    peerCount: () => (started ? helia.libp2p.getPeers().length : 0),
     stop: async () => {
       await helia.stop()
     }

@@ -47,8 +47,34 @@ export function newFetchStats(): FetchStats {
   }
 }
 
-const P2P_TIMEOUT_MS = 12_000
+const P2P_TIMEOUT_MS = 8_000
 const HTTP_TIMEOUT_MS = 20_000
+
+/** Shared segment cache — survives across loader instances and play() calls. */
+const CACHE_MAX_BYTES = 100 * 1024 * 1024 // 100 MB
+let cacheBytes = 0
+const cache = new Map<string, Uint8Array>()
+
+function cacheSet(key: string, value: Uint8Array): void {
+  cache.set(key, value)
+  cacheBytes += value.byteLength
+  // Evict oldest entries when over budget
+  while (cacheBytes > CACHE_MAX_BYTES && cache.size > 1) {
+    const oldest = cache.keys().next().value!
+    const evicted = cache.get(oldest)!
+    cache.delete(oldest)
+    cacheBytes -= evicted.byteLength
+  }
+}
+
+/** Clear the segment cache (e.g. when changing CID). */
+export function clearCache(): void {
+  cache.clear()
+  cacheBytes = 0
+}
+
+/** Reusable TextDecoder for manifest/playlist text payloads. */
+const textDecoder = new TextDecoder()
 
 /** Combine an external signal with a timeout into one controller. */
 function withTimeout(signal: AbortSignal | undefined, ms: number): AbortController {
@@ -58,7 +84,12 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortControll
     if (signal.aborted) controller.abort()
     else signal.addEventListener('abort', onAbort, { once: true })
   }
-  setTimeout(() => controller.abort(), ms)
+  const timerId = setTimeout(() => controller.abort(), ms)
+  // Clean up external listener and timer when the controller fires
+  controller.signal.addEventListener('abort', () => {
+    clearTimeout(timerId)
+    signal?.removeEventListener('abort', onAbort)
+  }, { once: true })
   return controller
 }
 
@@ -70,28 +101,24 @@ async function fetchViaP2P(
   signal?: AbortSignal
 ): Promise<Uint8Array> {
   const controller = withTimeout(signal, P2P_TIMEOUT_MS)
-  try {
-    // Dual-multiformats copy in the tree: align the CID type with the one
-    // @helia/unixfs expects.
-    const root = CID.parse(rootCid) as unknown as Parameters<UnixFS['cat']>[0]
-    const chunks: Uint8Array[] = []
-    for await (const chunk of node.unixfs.cat(root, {
-      path,
-      signal: controller.signal
-    })) {
-      chunks.push(chunk)
-    }
-    const total = chunks.reduce((n, c) => n + c.byteLength, 0)
-    const out = new Uint8Array(total)
-    let off = 0
-    for (const c of chunks) {
-      out.set(c, off)
-      off += c.byteLength
-    }
-    return out
-  } finally {
-    signal?.removeEventListener('abort', () => controller.abort())
+  // Dual-multiformats copy in the tree: align the CID type with the one
+  // @helia/unixfs expects.
+  const root = CID.parse(rootCid) as unknown as Parameters<UnixFS['cat']>[0]
+  const chunks: Uint8Array[] = []
+  for await (const chunk of node.unixfs.cat(root, {
+    path,
+    signal: controller.signal
+  })) {
+    chunks.push(chunk)
   }
+  const total = chunks.reduce((n, c) => n + c.byteLength, 0)
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const c of chunks) {
+    out.set(c, off)
+    off += c.byteLength
+  }
+  return out
 }
 
 /** Fetch over an HTTP gateway. */
@@ -122,12 +149,10 @@ function isTextContext(ctx: LoaderContext): boolean {
  * fLoader/pLoader are overridden separately.
  */
 export function createIberLoader(
-  node: IberNode,
+  node: IberNode | null,
   rootCid: string,
   fetchStats: FetchStats
 ): HlsConfig['loader'] {
-  const cache = new Map<string, Uint8Array>()
-
   return class IberLoader implements Loader<LoaderContext> {
     context: LoaderContext | null = null
     stats: LoaderStats = new LoadStats()
@@ -169,15 +194,18 @@ export function createIberLoader(
         fetchStats.segmentsCache++
       }
 
-      // 2. P2P over bitswap/WebRTC
-      if (!data) {
+      // 2. P2P over bitswap/WebRTC. Skipped when running gateway-only
+      // (node == null), when the node never fully started, or when there
+      // are no peers yet — nobody to ask, so don't pay the timeout.
+      if (!data && node !== null && node.started && node.peerCount() > 0) {
         try {
           data = await fetchViaP2P(node, rootCid, path, this.controller?.signal)
           source = 'p2p'
           fetchStats.bytesP2P += data.byteLength
           if (isFrag) fetchStats.segmentsP2P++
-          cache.set(path, data)
-        } catch {
+          cacheSet(path, data)
+        } catch (err) {
+          console.warn(`[IberCast] P2P failed for ${path}:`, err)
           /* fall through to gateway */
         }
       }
@@ -189,7 +217,7 @@ export function createIberLoader(
           source = 'gateway'
           fetchStats.bytesHTTP += data.byteLength
           if (isFrag) fetchStats.segmentsHTTP++
-          cache.set(path, data)
+          cacheSet(path, data)
         } catch (err) {
           const aborted = this.controller?.signal.aborted ?? false
           fetchStats.lastSource = aborted ? 'abort' : 'error'
@@ -206,10 +234,17 @@ export function createIberLoader(
         }
       }
 
+      if (!data) {
+        const msg = `No data resolved for path "${path}"`
+        fetchStats.lastSource = 'error'
+        this.callbacks.onError({ code: 500, text: msg }, context, null, this.stats)
+        return
+      }
+
       fetchStats.lastSource = source
       let payload: string | ArrayBuffer
       if (isTextContext(context)) {
-        payload = new TextDecoder().decode(data)
+        payload = textDecoder.decode(data)
       } else if (
         context.rangeStart !== undefined &&
         context.rangeEnd !== undefined
