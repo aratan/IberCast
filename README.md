@@ -84,10 +84,10 @@ de banda ancha del origin a cambios de eficiencia de red.
 - [ ] Verificación E2E con un vídeo publicado por `ibercastd` (bloqueada por Fase 1).
 
 ### Fase 3 — Producción
-- [ ] Seed nodes con proved plumbing (systemd/docker).
-- [ ] Pinning remoto (Pinata/web3.storage o Kubo cluster propio).
-- [ ] Live streaming con HLS corto ( ventanas de 4–6 s ) + LMDS opcional.
-- [ ] Autenticación de operador y multi-tenant.
+- [x] Seed nodes con proved plumbing (systemd/docker).
+- [x] Pinning remoto (Pinata/web3.storage o Kubo cluster propio).
+- [x] Live streaming con HLS corto (ventanas de 4–6 s) + modo evento.
+- [x] Autenticación de operador y multi-tenant.
 
 ## Documentación
 
@@ -107,19 +107,43 @@ IberCast/
 └── .github/          # CI (typecheck+build player, go test daemon)
 ```
 
-## Cómo probar (cuando exista el código)
+## Cómo probar
 
 ```bash
 # 1. Arranca Kubo local
 ipfs daemon
 
 # 2. Publica un vídeo
-cd ibercastd && go run . publish --input video.mp4
+cd ibercastd && go build -o ibercastd .
+./ibercastd serve --port 8585
+
+# En otra terminal, sube un vídeo:
+curl -X POST http://localhost:8585/api/videos \
+  -F "title=My Video" \
+  -F "file=@video.mp4"
 
 # 3. Sirve el player
 cd player && npm run dev
-# abre http://localhost:5173/?cid=<manifest-CID>
+# abre http://localhost:5173/?mode=viewer&api=http://localhost:8585
 ```
+
+## Pinning remoto
+
+Para que el contenido sea accesible incluso si el nodo local se apaga, usa pinning remoto:
+
+```bash
+# 1. Registrar un servicio de pinning
+ipfs pin remote service add pinata https://api.pinata.cloud <JWT>
+ipfs pin remote service add filebase https://api.filebase.io <TOKEN>
+
+# 2. Pinrear un CID publicado
+node scripts/pin-remote.mjs --cid <CID> --service pinata --name "video-1"
+```
+
+Servicios compatibles (plan free sin tarjeta):
+- **Pinata**: 1 GB gratis, https://api.pinata.cloud
+- **Filebase**: 5 GB gratis, https://api.filebase.io
+- **Storacha**: 5 GB gratis, https://api.web3.storage
 
 ## Licencia
 

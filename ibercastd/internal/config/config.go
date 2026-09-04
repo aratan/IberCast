@@ -9,9 +9,11 @@ import (
 
 // Config holds the runtime configuration for ibercastd.
 type Config struct {
-	Port       int
-	DataDir    string
-	FFmpegPath string
+	Port         int
+	DataDir      string
+	FFmpegPath   string
+	AdminToken   string // token for admin API authentication (optional)
+	EnableAuth   bool   // enable authentication for admin endpoints
 }
 
 // Parse reads CLI flags and returns a validated Config.
@@ -28,10 +30,15 @@ func Parse() (*Config, error) {
 		return nil, fmt.Errorf("parse flags: %w", err)
 	}
 
+	// Admin auth token (optional — if set, enables authentication)
+	adminToken := fs.String("admin-token", "", "Admin API auth token (if set, enables auth)")
+
 	cfg := &Config{
-		Port:       *port,
-		DataDir:    *dataDir,
-		FFmpegPath: *ffmpeg,
+		Port:         *port,
+		DataDir:      *dataDir,
+		FFmpegPath:   *ffmpeg,
+		AdminToken:   *adminToken,
+		EnableAuth:   *adminToken != "",
 	}
 
 	if err := cfg.Validate(); err != nil {

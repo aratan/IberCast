@@ -1,6 +1,23 @@
 import { createIberLoader, newFetchStats, type FetchStats } from '../loader'
 import { createIberNode, type IberNode } from '../node'
 
+function ensureIberState(fetchStats: FetchStats): void {
+  if (!window.__IBER__) {
+    window.__IBER__ = {
+      status: 'booting',
+      ready: false,
+      hlsError: null,
+      fetchStats,
+      levels: 0,
+      videoW: 0,
+      videoH: 0,
+      duration: 0,
+      playoutState: 'loading'
+    }
+  }
+  window.__IBER__.fetchStats = fetchStats
+}
+
 /**
  * Resolved parrilla slot — matches the backend ResolvedSlot shape.
  */
@@ -16,10 +33,6 @@ interface ResolvedSlot {
 
 type PlayoutState = 'loading' | 'playing' | 'empty' | 'error' | 'unresolved'
 
-interface PlayoutCallbacks {
-  onState?: (state: PlayoutState, message: string) => void
-}
-
 /**
  * Init playout: fetch parrilla, resolve active time slot, play via createIberLoader.
  * Re-resolves at each slot boundary.
@@ -27,9 +40,10 @@ interface PlayoutCallbacks {
 export async function initPlayout(
   channelId: string,
   apiBase: string,
-  callbacks: PlayoutCallbacks = {}
+  opts: { gateway?: string; videoEl?: string } = {}
 ): Promise<void> {
-  const video = document.getElementById('video') as HTMLVideoElement | null
+  const gateway = (opts.gateway || 'https://ipfs.io').replace(/\/+$/, '')
+  const video = document.getElementById(opts.videoEl || 'video') as HTMLVideoElement | null
   if (!video) return
 
   const stats: FetchStats = newFetchStats()
@@ -40,8 +54,11 @@ export async function initPlayout(
   let activeSlotId: string | null = null
   let boundaryTimer: ReturnType<typeof setTimeout> | null = null
 
+  ensureIberState(stats)
+
   function setState(state: PlayoutState, msg: string): void {
-    callbacks.onState?.(state, msg)
+    if (window.__IBER__) window.__IBER__.playoutState = state
+    if (window.__IBER__) window.__IBER__.status = msg
   }
 
   async function fetchParrilla(): Promise<ResolvedSlot[]> {
@@ -123,13 +140,14 @@ export async function initPlayout(
       progressive: false
     })
 
-    const masterUrl = `https://ipfs.io/ipfs/${slot.ref.cid}/master.m3u8`
+    const masterUrl = `${gateway}/ipfs/${slot.ref.cid}/master.m3u8`
     hls.loadSource(masterUrl)
     if (video) hls.attachMedia(video)
 
     hls.on(
       (await import('hls.js')).Events.MANIFEST_PARSED,
-      () => {
+      (_event: unknown, data: { levels: unknown[] }) => {
+        if (window.__IBER__) window.__IBER__.levels = data.levels.length
         video?.play().catch(() => {})
         setState('playing', `Playing: ${slot.ref?.title ?? 'Unknown'}`)
       }

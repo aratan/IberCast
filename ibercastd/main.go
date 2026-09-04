@@ -52,12 +52,21 @@ func main() {
 
 	// Security wrapper: reject path traversal BEFORE gorilla/mux processes the request.
 	// Go's HTTP server normalizes paths, so `..` in a URL gets cleaned before the handler.
-	// This wrapper catches the raw request URI.
+	// This wrapper catches the raw request URI. Also adds permissive CORS so the
+	// browser player (dev server or IPFS gateway) can call the API cross-origin.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.RequestURI, "..") || strings.Contains(r.URL.Path, "..") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "path traversal rejected"})
+			return
+		}
+		// CORS: allow any origin for API calls from the browser player.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		router.ServeHTTP(w, r)

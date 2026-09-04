@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // --- Entity types ---
@@ -24,7 +25,16 @@ type Video struct {
 	CID         string  `json:"cid"`
 	HLSUrl      string  `json:"hlsUrl"`
 	Duration    float64 `json:"duration"`
+	Qualities   []QualityInfo `json:"qualities,omitempty"`
 	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
+}
+
+// QualityInfo describes an HLS quality level (mirrors publish.QualityInfo).
+type QualityInfo struct {
+	Name     string  `json:"name"`
+	Label    string  `json:"label"`
+	Bitrate  string  `json:"bitrate"`
+	Duration float64 `json:"duration"`
 }
 
 type ParrillaSlot struct {
@@ -34,6 +44,19 @@ type ParrillaSlot struct {
 	TimeStart string  `json:"timeStart"` // HH:MM
 	Type      string  `json:"type"`      // "vod", "ad", "live"
 	Ref       string  `json:"ref"`       // Video or Ad ID
+}
+
+// LiveStream represents an active live streaming session.
+type LiveStream struct {
+	ID          string    `json:"id"`
+	ChannelID   string    `json:"channelId"`
+	Title       string    `json:"title"`
+	Status      string    `json:"status"` // "live", "pending", "ended"
+	StartedAt   time.Time `json:"startedAt"`
+	CurrentCID  string    `json:"currentCid,omitempty"`
+	HLSUrl      string    `json:"hlsUrl,omitempty"`
+	Duration    float64   `json:"duration"`
+	Qualities   []QualityInfo `json:"qualities,omitempty"`
 }
 
 type ResolvedSlot struct {
@@ -49,11 +72,12 @@ type ResolvedSlot struct {
 // --- Store ---
 
 type Store struct {
-	dir      string
-	mu       sync.RWMutex
-	channels []Channel
-	videos   []Video
-	parrilla []ParrillaSlot
+	dir        string
+	mu         sync.RWMutex
+	channels   []Channel
+	videos     []Video
+	parrilla   []ParrillaSlot
+	liveStreams []LiveStream
 }
 
 // New creates a Store and loads (or initialises) data from dir.
@@ -105,6 +129,9 @@ func (s *Store) loadOrCreate() error {
 		return err
 	}
 	if err := s.readJSON("parrilla.json", &s.parrilla); err != nil {
+		return err
+	}
+	if err := s.readJSON("live.json", &s.liveStreams); err != nil {
 		return err
 	}
 
@@ -279,5 +306,58 @@ func (s *Store) Channels() []Channel {
 	defer s.mu.RUnlock()
 	out := make([]Channel, len(s.channels))
 	copy(out, s.channels)
+	return out
+}
+
+// --- Live Stream CRUD ---
+
+func (s *Store) SaveLiveStream(ls LiveStream) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.liveStreams = append(s.liveStreams, ls)
+	return s.writeJSON("live.json", s.liveStreams)
+}
+
+func (s *Store) GetLiveStream(id string) (LiveStream, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, ls := range s.liveStreams {
+		if ls.ID == id {
+			return ls, true
+		}
+	}
+	return LiveStream{}, false
+}
+
+func (s *Store) UpdateLiveStream(id string, ls LiveStream) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, stream := range s.liveStreams {
+		if stream.ID == id {
+			s.liveStreams[i] = ls
+			_ = s.writeJSON("live.json", s.liveStreams)
+			return
+		}
+	}
+}
+
+func (s *Store) DeleteLiveStream(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, ls := range s.liveStreams {
+		if ls.ID == id {
+			s.liveStreams = append(s.liveStreams[:i], s.liveStreams[i+1:]...)
+			_ = s.writeJSON("live.json", s.liveStreams)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) LoadLiveStreams() []LiveStream {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]LiveStream, len(s.liveStreams))
+	copy(out, s.liveStreams)
 	return out
 }

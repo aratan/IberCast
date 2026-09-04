@@ -9,8 +9,27 @@ import {
 import { initPlayout } from './viewer/playout'
 import { DashboardView } from './dashboard/index'
 
+// --- E2E test hooks -------------------------------------------------------
+declare global {
+  interface Window {
+    __IBER__: {
+      status: string
+      ready: boolean
+      readyPromise?: Promise<boolean>
+      hlsError: string | null
+      fetchStats: FetchStats
+      levels: number
+      videoW: number
+      videoH: number
+      duration: number
+      playoutState?: string
+    }
+  }
+}
+
 const params = new URLSearchParams(location.search)
 const mode = params.get('mode') || 'viewer'
+const MODE_HANDLED = mode === 'dashboard' || mode === 'viewer'
 
 // --- MODE ROUTING ---
 // ?mode=dashboard → Dashboard UI
@@ -25,8 +44,7 @@ if (mode === 'dashboard') {
   if (legacyEl) legacyEl.style.display = 'none'
   const apiBase = params.get('api') || location.origin
   DashboardView(root!, apiBase)
-  // Boot complete — stop here, don't initialize legacy player
-  throw new Error('__BOOT_DASHBOARD__')
+  // Boot complete — legacy init below is skipped via MODE_HANDLED guard.
 }
 if (mode === 'viewer') {
   const viewerEl = document.getElementById('viewer')
@@ -37,11 +55,14 @@ if (mode === 'viewer') {
   if (legacyEl) legacyEl.style.display = 'none'
   const apiBase = params.get('api') || location.origin
   const channelId = params.get('channelId') || 'default'
-  initPlayout(channelId, apiBase)
-  throw new Error('__BOOT_VIEWER__')
+  initPlayout(channelId, apiBase, {
+    gateway: params.get('gw') || undefined,
+    videoEl: 'video-viewer'
+  })
 }
 
 // --- Legacy mode: manual CID input (backwards compatible) ---
+if (!MODE_HANDLED) {
 const legacyEl = document.getElementById('legacy')
 if (legacyEl) legacyEl.style.display = 'block'
 
@@ -63,23 +84,6 @@ let playGeneration = 0
 // Optional overrides: /?cid=...&gw=https://mygateway.example
 const GATEWAY = params.get('gw') || 'https://ipfs.io'
 const cidFromUrl = params.get('cid')
-
-// --- E2E test hooks -------------------------------------------------------
-declare global {
-  interface Window {
-    __IBER__: {
-      status: string
-      ready: boolean
-      readyPromise: Promise<boolean>
-      hlsError: string | null
-      fetchStats: FetchStats
-      levels: number
-      videoW: number
-      videoH: number
-      duration: number
-    }
-  }
-}
 
 let readyResolve: (ok: boolean) => void = () => {}
 const readyPromise = new Promise<boolean>((resolve) => {
@@ -310,3 +314,4 @@ void (async () => {
     readyResolve(false)
   }
 })()
+}
