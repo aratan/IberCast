@@ -36,6 +36,13 @@ export interface FetchStats {
   lastSource: string
 }
 
+/** Estado de actividad de descarga para feedback sutil en la UI. */
+export type ActivityState =
+  | { state: 'downloading'; label?: string }
+  | { state: 'idle' }
+
+export type ActivityCallback = (a: ActivityState) => void
+
 export function newFetchStats(): FetchStats {
   return {
     segmentsP2P: 0,
@@ -96,7 +103,8 @@ async function fetchViaP2P(
 export function createIberLoader(
   node: IberNode | null,
   rootCid: string,
-  fetchStats: FetchStats
+  fetchStats: FetchStats,
+  onActivity?: ActivityCallback
 ): HlsConfig['loader'] {
   const cache = new Map<string, Uint8Array>()
 
@@ -128,6 +136,9 @@ export function createIberLoader(
       callbacks: LoaderCallbacks<LoaderContext>
     ): Promise<void> {
       const isFrag = context.type === 'media-fragment'
+      // Señal de actividad: solo fragmentos de media (no playlists) para no
+      // parpadear la UI cada pocos cientos de ms con el refresh.
+      if (isFrag) onActivity?.({ state: 'downloading' })
 
       // 1. in-memory cache (only full-object requests can be served locally)
       const key = context.url.split('?')[0]
@@ -136,6 +147,7 @@ export function createIberLoader(
         fetchStats.segmentsCache++
         fetchStats.lastSource = 'cache'
         this.deliver(context, callbacks, hit)
+        onActivity?.({ state: 'idle' })
         return
       }
 
@@ -159,6 +171,7 @@ export function createIberLoader(
           fetchStats.lastSource = 'p2p'
           cache.set(key, data)
           this.deliver(context, callbacks, data)
+          onActivity?.({ state: 'idle' })
           return
         } catch {
           /* fall through to gateway */
@@ -195,10 +208,12 @@ export function createIberLoader(
               if (context.rangeStart === undefined) cache.set(key(context), bytes)
             }
           }
+          if (isFrag) onActivity?.({ state: 'idle' })
           callbacks.onSuccess(response, stats, ctx, networkDetails)
         },
         onError: (error, ctx, networkDetails, stats) => {
           fetchStats.lastSource = 'error'
+          if (isFrag) onActivity?.({ state: 'idle' })
           callbacks.onError(error, ctx, networkDetails, stats)
         }
       }

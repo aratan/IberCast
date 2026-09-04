@@ -45,6 +45,20 @@
     .card .v.http { color: #e0a84c; }
     .card .v.cache { color: #5cb3e0; }
     footer { margin-top: 22px; color: #46566a; font-size: .75rem; }
+    #activity {
+      margin-top: 6px; color: #64748b; font-size: .78rem; min-height: 1.2em;
+      display: flex; align-items: center; gap: 6px;
+    }
+    #activity .dot {
+      width: 7px; height: 7px; border-radius: 50%; background: #4cc38a; flex: none;
+      opacity: 0;
+    }
+    #activity.busy .dot { opacity: 1; animation: blink 1s infinite; }
+    #activity.warn { color: #e0a84c; }
+    #activity.warn .dot { background: #e0a84c; opacity: 1; animation: blink .6s infinite; }
+    #activity.err { color: #e0655c; }
+    #activity.err .dot { background: #e0655c; opacity: 1; }
+    @keyframes blink { 50% { opacity: .25; } }
   </style>
 </head>
 <body>
@@ -69,6 +83,9 @@
   </div>
 
   <footer>Último segmento resuelto por: <span id="m-last">–</span></footer>
+
+  <div id="activity"><span class="dot"></span><span id="activity-txt">Cargando…</span></div>
+
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

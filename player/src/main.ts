@@ -1,6 +1,11 @@
 import Hls, { Events, ErrorTypes } from 'hls.js'
 import { createIberNode, type IberNode } from './node'
-import { createIberLoader, newFetchStats, type FetchStats } from './loader'
+import {
+  createIberLoader,
+  newFetchStats,
+  type ActivityState,
+  type FetchStats
+} from './loader'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
   document.getElementById(id) as T
@@ -8,6 +13,8 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
 const video = $<HTMLVideoElement>('video')
 const cidInput = $<HTMLInputElement>('cid')
 const status = $('status')
+const activityEl = $<HTMLElement>('activity')
+const activityTxt = $('activity-txt')
 
 const stats: FetchStats = newFetchStats()
 let node: IberNode | null = null
@@ -68,6 +75,56 @@ function setStatus(s: string): void {
   if (window.__IBER__) window.__IBER__.status = s
 }
 
+// --- Indicador de actividad (feedback sutil de red) -----------------------
+// Muestra si se está descargando un segmento, si se reproduce en calma, o si
+// el navegador está sin conexión. No pretende ser llamativo: solo claridad.
+let activityIdleTimer: ReturnType<typeof setTimeout> | null = null
+
+function setActivity(
+  cls: '' | 'busy' | 'warn' | 'err',
+  text: string
+): void {
+  activityEl.className = cls
+  activityTxt.textContent = text
+}
+
+function markActivityBusy(label: string): void {
+  if (activityIdleTimer) {
+    clearTimeout(activityIdleTimer)
+    activityIdleTimer = null
+  }
+  setActivity('busy', label)
+}
+
+function markActivityIdle(): void {
+  // Breve retardo: evita parpadear "descargando/reproduciendo" entre segmentos.
+  activityIdleTimer = setTimeout(() => {
+    activityIdleTimer = null
+    setActivity('', navigator.onLine ? 'Reproduciendo' : 'Sin conexión')
+  }, 700)
+}
+
+function markActivityOffline(): void {
+  if (activityIdleTimer) {
+    clearTimeout(activityIdleTimer)
+    activityIdleTimer = null
+  }
+  setActivity('err', 'Sin conexión — revísalo')
+}
+
+function handleActivity(a: ActivityState): void {
+  if (a.state === 'downloading') markActivityBusy('Descargando…')
+  else markActivityIdle()
+}
+
+window.addEventListener('online', () => {
+  if (activityIdleTimer) clearTimeout(activityIdleTimer)
+  setActivity('', 'Reproduciendo')
+  // Si hay un stream activo, relanza la carga tras volver online.
+  if (hls && window.__IBER__.ready) hls.startLoad()
+})
+window.addEventListener('offline', markActivityOffline)
+
 // -------------------------------------------------------------------------
 
 function fmtBytes(n: number): string {
@@ -108,6 +165,7 @@ async function play(cid: string): Promise<void> {
   // Reset state for new play() call
   playGeneration++
   resetIberState()
+  setActivity('', 'Cargando…')
   if (safetyTimer !== null) {
     clearTimeout(safetyTimer)
     safetyTimer = null
@@ -144,7 +202,7 @@ async function play(cid: string): Promise<void> {
 
   hls = new Hls({
     // node == null => loader en modo solo-gateway (nop2p o fallo de arranque)
-    loader: createIberLoader(node, cid, stats),
+    loader: createIberLoader(node, cid, stats, handleActivity),
     enableWorker: false,
     progressive: false,
     debug: params.get('debug') === '1'
@@ -162,9 +220,11 @@ async function play(cid: string): Promise<void> {
     if (!data.fatal) return
     if (data.type === ErrorTypes.NETWORK_ERROR) {
       setStatus(`⚠️ Error de red: ${data.details}. Reintentando…`)
+      setActivity('warn', 'Problema de red — reintentando…')
       hls?.startLoad()
     } else {
       setStatus(`❌ Error fatal: ${data.details}`)
+      setActivity('err', 'Error de reproducción')
       window.__IBER__.hlsError = `fatal:${data.details}`
       readyResolve(false)
       hls?.destroy()

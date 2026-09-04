@@ -107,15 +107,54 @@ sequenceDiagram
     actor Creador
     participant D as ibercastd
     participant K as Kubo/IPFS
+    participant R as Servicio pinning remoto
     participant P as Espectadores (player)
 
     Creador->>D: ibercastd publish --input video.mp4
-    D->>K: add + pin del DAG HLS
+    D->>K: add + pin del DAG HLS (local)
     K-->>D: rootCID
+    D->>R: pin remote add (persistencia ajena)
+    R-->>D: ok
     D-->>Creador: URL del player: /?cid=<rootCID>
     Creador->>P: comparte la URL
     P->>K: manifiesto (gateway) + bloques (bitswap)
 ```
+
+### 5.1 Persistencia: por qué el pin local no basta
+
+`ipfs add` + `ipfs pin add` guarda el contenido **solo en tu nodo Kubo**. Si
+ese nodo se apaga o pierde conectividad, el contenido deja de ser accesible
+en la red aunque el CID exista. El DHT solo anuncia tu peer como proveedor.
+
+Para que "cualquiera lo vea siempre" hace falta que **otro nodo ajeno**
+tenga los bloques. Ese es el **pinning remoto** (`ipfs pin remote`): pides a
+un servicio de pinning (Pinata, Filebase, Storacha, etc.) que guarde una
+copia persistente. Mientras el servicio esté en pie y pagues/estés en el
+plan free, el contenido se sirve desde esos nodos aunque apagues el tuyo.
+
+### 5.2 Pinning remoto manual (Kubo 0.43+)
+
+```bash
+# 1. Registrar un servicio (endpoint + token del proveedor)
+ipfs pin remote service add <nombre> <endpoint> <token>
+#    Pinata:    https://api.pinata.cloud   (Bearer <JWT>)
+#    Filebase:  https://api.filebase.io     (Bearer <TOKEN>)
+#    Storacha:  https://api.web3.storage    (Bearer <TOKEN>)
+
+# 2. Pinear un CID en el servicio remoto
+ipfs pin remote add --service=<nombre> --name=<etiqueta> <rootCID>
+
+# 3. Verificar
+ipfs pin remote ls --service=<nombre>
+
+# 4. Comprobar que sobrevive a apagar tu nodo:
+#    apaga `ipfs daemon` y prueba el gateway público:
+#    curl -I https://ipfs.io/ipfs/<rootCID>/master.m3u8  → 200
+```
+
+Requisitos del proveedor: un sign-up del plan free sin tarjeta (Filebase 5 GB,
+Pinata 1 GB, Storacha 5 GB). El resto del flujo (2) es idéntico.
+
 
 ## 6. Convenciones
 
