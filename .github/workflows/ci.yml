@@ -34,11 +34,27 @@ jobs:
       - name: Build
         run: npx vite build
 
+  # Detects whether the daemon exists yet; avoids hashFiles quirks by
+  # checking the filesystem at runtime.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      daemon: ${{ steps.f.outputs.daemon }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: f
+        run: |
+          if [ -f ibercastd/go.mod ]; then
+            echo "daemon=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "daemon=false" >> "$GITHUB_OUTPUT"
+          fi
+
   daemon:
     name: Daemon (vet + build + test)
+    needs: changes
+    if: needs.changes.outputs.daemon == 'true'
     runs-on: ubuntu-latest
-    # Guard: only runs once ibercastd/ exists (Phase 1)
-    if: ${{ hashFiles('ibercastd/go.mod') != '' }}
     defaults:
       run:
         working-directory: ibercastd
