@@ -1,0 +1,57 @@
+name: Commit hygiene
+
+# Rejects pushes/PRs whose commit messages contain AI-generator footers
+# (Codebuff, Claude, Copilot, ChatGPT, Gemini, Cursor, Aider...).
+# Policy: commit messages are written by the author; no attribution bots.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  no-ai-footers:
+    name: No AI-generator footers in commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so we can inspect every pushed commit, not just the tip
+          fetch-depth: 0
+
+      - name: Determine commit range
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "range='${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}'" >> "$GITHUB_OUTPUT"
+          else
+            # push: compare against the previous commit on the branch
+            if git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+              echo "range='${{ github.event.before }}..${{ github.sha }}'" >> "$GITHUB_OUTPUT"
+            else
+              echo "range='${{ github.sha }}'" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Scan commit messages for AI footers
+        run: |
+          set -euo pipefail
+          RANGE="${{ steps.range.outputs.range }}"
+          echo "Scanning: $RANGE"
+          hits=0
+          for sha in $(git rev-list $RANGE); do
+            msg=$(git log -1 --format=%B "$sha")
+            if echo "$msg" | grep -qiE '🤖|generated with (codebuff|claude|copilot|cursor|aider|chatgpt|openai|gemini)|co-authored-by:.*(codebuff|claude|copilot|cursor|aider|openai|anthropic|google|github-actions\[bot\])'; then
+              echo "::error::Commit $sha contains an AI-generator footer"
+              echo "$msg" | head -20 | sed 's/^/    /'
+              hits=$((hits+1))
+            fi
+          done
+          if [ "$hits" -gt 0 ]; then
+            echo "::error::$hits commit(s) with AI footers found. Rewrite history: git commit --amend / git filter-repo --message-callback"
+            exit 1
+          fi
+          echo "✅ No AI footers in $RANGE"
