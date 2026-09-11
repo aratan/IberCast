@@ -1,0 +1,31 @@
+# systemd unit for ibercastd (IberCast daemon)
+# Install:
+#   sudo cp deploy/ibercastd.service /etc/systemd/system/
+#   sudo mkdir -p /etc/ibercastd
+#   sudo sh -c 'umask 077; echo "IBERCASTD_ADMIN_TOKEN=change-me" > /etc/ibercastd/env'
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ibercastd
+#
+# Adjust paths if your binary/data dir live elsewhere.
+
+[Unit]
+Description=IberCast P2P streaming daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/ibercastd/env
+ExecStart=/opt/ibercastd/ibercastd serve --port 8585 --data-dir /opt/ibercastd/data --ffmpeg-path /usr/bin/ffmpeg --admin-token ${IBERCASTD_ADMIN_TOKEN}
+WorkingDirectory=/opt/ibercastd
+Restart=on-failure
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
