@@ -88,6 +88,25 @@ func (c *Client) Add(dirPath string) (string, error) {
 	return rootCID, nil
 }
 
+// Cat fetches the raw content addressed by cid via /api/v0/cat.
+func (c *Client) Cat(cid string) ([]byte, error) {
+	endpoint := c.Endpoint
+	if endpoint == "" {
+		endpoint = "http://localhost:5001"
+	}
+	url := fmt.Sprintf("%s/api/v0/cat?arg=%s", endpoint, cid)
+	req, err := newRequest("POST", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := doRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
 // ExportCAR exports a CID to a CAR file using /api/v0/dag/export.
 // The CAR file contains the full DAG rooted at cid (all blocks).
 // This is useful for backup, offline distribution, or pinning services.
@@ -98,7 +117,8 @@ func (c *Client) ExportCAR(cid, carPath string) error {
 	}
 
 	url := fmt.Sprintf("%s/api/v0/dag/export?arg=%s", endpoint, cid)
-	req, err := newRequest("GET", url, nil)
+	// Kubo requires POST for dag/export (GET returns 405 on modern versions).
+	req, err := newRequest("POST", url, nil)
 	if err != nil {
 		return err
 	}

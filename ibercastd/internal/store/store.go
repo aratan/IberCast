@@ -46,6 +46,23 @@ type ParrillaSlot struct {
 	Ref       string  `json:"ref"`       // Video or Ad ID
 }
 
+// Ad is the advertisment entity. Schema only in this phase — no playback.
+type Ad struct {
+	ID       string  `json:"id"`
+	Title    string  `json:"title"`
+	CID      string  `json:"cid"`
+	HLSUrl   string  `json:"hlsUrl"`
+	Duration float64 `json:"duration"`
+}
+
+// Effect is a visual overlay (logo/text/overlay). Schema only in this phase —
+// rendering is out of scope.
+type Effect struct {
+	ID     string                 `json:"id"`
+	Type   string                 `json:"type"` // "logo", "text", "overlay"
+	Params map[string]interface{} `json:"params"`
+}
+
 // LiveStream represents an active live streaming session.
 type LiveStream struct {
 	ID          string    `json:"id"`
@@ -53,6 +70,7 @@ type LiveStream struct {
 	Title       string    `json:"title"`
 	Status      string    `json:"status"` // "live", "pending", "ended"
 	StartedAt   time.Time `json:"startedAt"`
+	StreamKey   string    `json:"streamKey,omitempty"` // RTMP path key: ic_<hex>
 	CurrentCID  string    `json:"currentCid,omitempty"`
 	HLSUrl      string    `json:"hlsUrl,omitempty"`
 	Duration    float64   `json:"duration"`
@@ -72,11 +90,13 @@ type ResolvedSlot struct {
 // --- Store ---
 
 type Store struct {
-	dir        string
-	mu         sync.RWMutex
-	channels   []Channel
-	videos     []Video
-	parrilla   []ParrillaSlot
+	dir         string
+	mu          sync.RWMutex
+	channels    []Channel
+	videos      []Video
+	parrilla    []ParrillaSlot
+	ads         []Ad
+	effects     []Effect
 	liveStreams []LiveStream
 }
 
@@ -131,6 +151,12 @@ func (s *Store) loadOrCreate() error {
 	if err := s.readJSON("parrilla.json", &s.parrilla); err != nil {
 		return err
 	}
+	if err := s.readJSON("ads.json", &s.ads); err != nil {
+		return err
+	}
+	if err := s.readJSON("effects.json", &s.effects); err != nil {
+		return err
+	}
 	if err := s.readJSON("live.json", &s.liveStreams); err != nil {
 		return err
 	}
@@ -144,7 +170,36 @@ func (s *Store) loadOrCreate() error {
 			return fmt.Errorf("init default channel: %w", err)
 		}
 	}
+	// Keep ads/effects collections materialised so they survive restart
+	// even when the station has never mutated them.
+	if s.ads == nil {
+		s.ads = []Ad{}
+		if err := s.writeJSON("ads.json", s.ads); err != nil {
+			return fmt.Errorf("init ads: %w", err)
+		}
+	}
+	if s.effects == nil {
+		s.effects = []Effect{}
+		if err := s.writeJSON("effects.json", s.effects); err != nil {
+			return fmt.Errorf("init effects: %w", err)
+		}
+	}
 	return nil
+}
+
+// --- Channels CRUD ---
+
+// AddChannel appends a channel, rejecting duplicate IDs.
+func (s *Store) AddChannel(c Channel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ch := range s.channels {
+		if ch.ID == c.ID {
+			return fmt.Errorf("channel %q already exists", c.ID)
+		}
+	}
+	s.channels = append(s.channels, c)
+	return s.writeJSON("channels.json", s.channels)
 }
 
 // --- Videos CRUD ---
@@ -175,17 +230,48 @@ func (s *Store) SaveVideo(v Video) error {
 	return s.writeJSON("videos.json", s.videos)
 }
 
-func (s *Store) DeleteVideo(id string) bool {
+func (s *Store) DeleteVideo(id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, v := range s.videos {
 		if v.ID == id {
 			s.videos = append(s.videos[:i], s.videos[i+1:]...)
-			_ = s.writeJSON("videos.json", s.videos)
-			return true
+			return true, s.writeJSON("videos.json", s.videos)
 		}
 	}
-	return false
+	return false, nil
+}
+
+// --- Ads & Effects (schema-only entities) ---
+
+func (s *Store) Ads() []Ad {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Ad, len(s.ads))
+	copy(out, s.ads)
+	return out
+}
+
+func (s *Store) Effects() []Effect {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Effect, len(s.effects))
+	copy(out, s.effects)
+	return out
+}
+
+func (s *Store) SaveAd(a Ad) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ads = append(s.ads, a)
+	return s.writeJSON("ads.json", s.ads)
+}
+
+func (s *Store) SaveEffect(e Effect) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.effects = append(s.effects, e)
+	return s.writeJSON("effects.json", s.effects)
 }
 
 // --- Parrilla CRUD ---
@@ -216,30 +302,28 @@ func (s *Store) SaveParrilla(p ParrillaSlot) error {
 	return s.writeJSON("parrilla.json", s.parrilla)
 }
 
-func (s *Store) UpdateParrilla(id string, p ParrillaSlot) bool {
+func (s *Store) UpdateParrilla(id string, p ParrillaSlot) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, slot := range s.parrilla {
 		if slot.ID == id {
 			s.parrilla[i] = p
-			_ = s.writeJSON("parrilla.json", s.parrilla)
-			return true
+			return true, s.writeJSON("parrilla.json", s.parrilla)
 		}
 	}
-	return false
+	return false, nil
 }
 
-func (s *Store) DeleteParrilla(id string) bool {
+func (s *Store) DeleteParrilla(id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, p := range s.parrilla {
 		if p.ID == id {
 			s.parrilla = append(s.parrilla[:i], s.parrilla[i+1:]...)
-			_ = s.writeJSON("parrilla.json", s.parrilla)
-			return true
+			return true, s.writeJSON("parrilla.json", s.parrilla)
 		}
 	}
-	return false
+	return false, nil
 }
 
 // --- Resolve parrilla ---

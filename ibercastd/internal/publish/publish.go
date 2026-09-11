@@ -99,23 +99,33 @@ func Run(ffmpegPath, inputPath, dataDir, ipfsEndpoint string, liveCfg *ingest.Li
 	}, nil
 }
 
-// estimateDuration counts segments × 6s (hls_time=6) as a rough duration estimate.
+// estimateDuration reads the v0 playlist and sums its EXTINF durations.
 // Uses the highest quality (v0) for the estimate.
 func estimateDuration(hlsDir string) float64 {
 	return estimateQualityDuration(hlsDir, "v0")
 }
 
-// estimateQualityDuration counts segments in a specific quality dir.
+// estimateQualityDuration sums the EXTINF values of a quality's HLS playlist.
 func estimateQualityDuration(hlsDir, quality string) float64 {
-	entries, err := os.ReadDir(filepath.Join(hlsDir, quality))
+	playlistPath := filepath.Join(hlsDir, quality, "index.m3u8")
+	data, err := os.ReadFile(playlistPath)
 	if err != nil {
 		return 0
 	}
-	segCount := 0
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".ts") {
-			segCount++
+	var total float64
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#EXTINF:") {
+			continue
+		}
+		v := strings.TrimPrefix(line, "#EXTINF:")
+		if idx := strings.Index(v, ","); idx >= 0 {
+			v = v[:idx]
+		}
+		var secs float64
+		if _, err := fmt.Sscanf(v, "%f", &secs); err == nil {
+			total += secs
 		}
 	}
-	return float64(segCount) * 6.0
+	return total
 }
