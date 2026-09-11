@@ -1,5 +1,9 @@
 # IberCast
 
+<p align="center">
+  <img src="assets/ibercast-logo.svg" alt="IberCast logo" width="180">
+</p>
+
 **Streaming de vídeo P2P sobre IPFS.** El vídeo se fragmenta en HLS y se
 distribuye entre los propios espectadores: cada navegador que reproduce
 actúa a la vez como nodo que sirve fragmentos a otros, reduciendo el coste
@@ -24,14 +28,18 @@ de banda ancha del origin a cambios de eficiencia de red.
 
 - VOD: subir un vídeo → transcodificar a HLS → publicar en IPFS como CAR
   → reproducir desde el navegador por P2P.
-- Fuera de alcance por ahora: live streaming, chat en vivo, DRM,
-  transcodificación en el navegador.
+- Live streaming: ingest RTMP/WebRTC → MediaMTX → HLS corto (ventanas 4–6 s)
+  → proxy same-origin en `ibercastd` → reproducción en el navegador
+  (sin CORS, un solo puerto público).
+- Fuera de alcance por ahora: chat en vivo, DRM, transcodificación en el
+  navegador.
 
 ## Stack elegido (híbrido Go + TypeScript)
 
 | Capa | Tecnología | Motivo |
 |---|---|---|
 | Nodo / seed backend | **Go** + `libp2p` / `go-ipfs-api` (Kubo RPC) | Madurez del ecosistema IPFS, goroutines para cientos de conexiones simultáneas, bajo consumo de memoria en seeders |
+| Ingest en vivo | **MediaMTX** (RTMP :1935) | Estándar de facto para emisores (OBS, ffmpeg); empaqueta a HLS corto |
 | Transcodificación | **FFmpeg** → HLS (`.m3u8` + segmentos `.ts`/`.m4s`) | Estándar de facto; los segmentos son bloques IPFS naturales |
 | Cliente / reproductor | **TypeScript** + **Helia** (JS-IPFS en navegador) + **WebRTC** | Los navegadores se convierten en nodos P2P sin plugins |
 | Reproducción | **hls.js** con loader personalizado | Permite interceptar cada petición de segmento y resolverla primero vía IPFS/WebRTC, cayendo al gateway HTTP como último recurso |
@@ -60,9 +68,12 @@ de banda ancha del origin a cambios de eficiencia de red.
 ```
 
 - **`ibercastd`** (Go): transcodifica con FFmpeg, empaqueta a CAR, publica
-  en IPFS, sirve API admin/REST para subir y listar canales.
+  en IPFS, sirve API admin/REST para subir y listar canales, e ingesta en
+  vivo: valida `streamKey`, marca un stream como `live` cuando MediaMTX
+  reporta el path activo (poller 5 s) y sirve HLS con proxy same-origin.
 - **`player`** (TS): reproductor embebible; loader de hls.js que pregunta
   primero a la swarm P2P (Helia + WebRTC) y hace fallback a gateway HTTP.
+  Vista `wall` para el grid de canales en vivo.
 
 ## Roadmap
 
@@ -152,3 +163,8 @@ Por decidir (MIT o Apache-2.0).
 ## Estado
 
 🚧 Pre-lanzamiento — README y roadmap vivos, código por llegar.
+
+> Estado real: `ibercastd` + `player` + MediaMTX funcionando con live
+> streaming local (OBS/ffmpeg → RTMP → HLS → wall/player) y VOD; repo
+> subido a GitHub (github.com/aratan/IberCast). Roadmap de arriba se
+> actualiza contra el código en cada fase.

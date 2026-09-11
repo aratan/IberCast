@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="IberCast logo">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14213d"/>
+      <stop offset="1" stop-color="#1f3d7a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6EE7FF"/>
+      <stop offset="1" stop-color="#3B82F6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- fondo redondeado -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <!-- ondas de broadcast desde el nodo central -->
+  <g fill="none" stroke="url(#accent)" stroke-linecap="round">
+    <path d="M196 150 A140 140 0 0 1 356 136" stroke-width="10" opacity="0.85"/>
+    <path d="M160 96 A200 200 0 0 1 392 82" stroke-width="8" opacity="0.45"/>
+    <path d="M126 36 A258 258 0 0 1 426 24" stroke-width="6" opacity="0.22"/>
+  </g>
+
+  <!-- mesh P2P: conexiones entre nodos -->
+  <g stroke="url(#accent)" stroke-width="6" opacity="0.55">
+    <line x1="256" y1="256" x2="150" y2="392"/>
+    <line x1="256" y1="256" x2="362" y2="392"/>
+    <line x1="150" y1="392" x2="362" y2="392"/>
+  </g>
+
+  <!-- nodos del mesh -->
+  <circle cx="150" cy="392" r="26" fill="url(#accent)"/>
+  <circle cx="362" cy="392" r="26" fill="url(#accent)"/>
+
+  <!-- nodo central (origin/seed) -->
+  <circle cx="256" cy="256" r="58" fill="url(#accent)"/>
+  <circle cx="256" cy="256" r="24" fill="#14213d"/>
+  <circle cx="246" cy="246" r="7" fill="url(#accent)"/>
+</svg>
