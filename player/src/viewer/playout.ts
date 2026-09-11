@@ -1,5 +1,7 @@
+import Hls, { Events } from 'hls.js'
 import { createIberLoader, newFetchStats, type FetchStats } from '../loader'
 import { createIberNode, type IberNode } from '../node'
+import { gatewayBase } from '../gateway'
 
 function ensureIberState(fetchStats: FetchStats): void {
   if (!window.__IBER__) {
@@ -42,15 +44,12 @@ export async function initPlayout(
   apiBase: string,
   opts: { gateway?: string; videoEl?: string } = {}
 ): Promise<void> {
-  const gateway = (opts.gateway || 'https://ipfs.io').replace(/\/+$/, '')
   const video = document.getElementById(opts.videoEl || 'video') as HTMLVideoElement | null
   if (!video) return
 
   const stats: FetchStats = newFetchStats()
   let node: IberNode | null = null
-  let hls: ReturnType<typeof import('hls.js').default.prototype['destroy']> extends never
-    ? unknown
-    : InstanceType<typeof import('hls.js').default> | null = null
+  let hls: Hls | null = null
   let activeSlotId: string | null = null
   let boundaryTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -59,20 +58,19 @@ export async function initPlayout(
   function setState(state: PlayoutState, msg: string): void {
     if (window.__IBER__) window.__IBER__.playoutState = state
     if (window.__IBER__) window.__IBER__.status = msg
+    // Mirror the status into the viewer UI (#status-viewer initial text is
+    // "Cargando parrilla…" — without this it never updates).
+    const statusEl = document.getElementById('status-viewer')
+    if (statusEl) statusEl.textContent = msg
   }
 
   async function fetchParrilla(): Promise<ResolvedSlot[]> {
     const now = new Date()
     const day = now.getDay()
     const url = `${apiBase}/api/parrilla?channelId=${encodeURIComponent(channelId)}&day=${day}`
-    try {
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return await res.json()
-    } catch {
-      setState('error', 'No schedule available')
-      return []
-    }
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
   }
 
   function resolveActiveSlot(slots: ResolvedSlot[]): ResolvedSlot | null {
@@ -89,6 +87,15 @@ export async function initPlayout(
     return null
   }
 
+  async function fetchSafely(): Promise<ResolvedSlot[]> {
+    try {
+      return await fetchParrilla()
+    } catch {
+      setState('error', 'Backend unreachable — retrying…')
+      return []
+    }
+  }
+
   function scheduleNextBoundary(): void {
     if (boundaryTimer) clearTimeout(boundaryTimer)
     const now = new Date()
@@ -97,7 +104,7 @@ export async function initPlayout(
     nextMinute.setMinutes(nextMinute.getMinutes() + 1)
     const ms = nextMinute.getTime() - now.getTime()
     boundaryTimer = setTimeout(async () => {
-      const slots = await fetchParrilla()
+      const slots = await fetchSafely()
       const active = resolveActiveSlot(slots)
       if (active && active.id !== activeSlotId) {
         // Slot changed — stop current and play new
@@ -123,29 +130,35 @@ export async function initPlayout(
 
     activeSlotId = slot.id
 
-    // Init node if needed
+    // Init node in background — playback starts gateway-only and P2P engages
+    // once the node bootstraps; never block the viewer on bootstrap.
     if (!node) {
-      try {
-        node = await createIberNode()
-      } catch {
-        // Gateway-only fallback
-        node = null
-      }
+      createIberNode()
+        .then((n) => {
+          node = n
+        })
+        .catch(() => {
+          node = null
+        })
     }
 
-    const Hls = (await import('hls.js')).default
     hls = new Hls({
-      loader: createIberLoader(node, slot.ref.cid, stats),
+      loader: createIberLoader(() => node, slot.ref.cid, stats),
       enableWorker: false,
       progressive: false
     })
 
-    const masterUrl = `${gateway}/ipfs/${slot.ref.cid}/master.m3u8`
+    // opts.gateway (explicit, e.g. E2E) wins; otherwise resolve from ?gw= or
+    // the default local subdomain gateway for this CID.
+    const gateway =
+      opts.gateway ? opts.gateway.replace(/\/+$/, '') : gatewayBase(slot.ref.cid)
+
+    const masterUrl = `${gateway}/master.m3u8`
     hls.loadSource(masterUrl)
     if (video) hls.attachMedia(video)
 
     hls.on(
-      (await import('hls.js')).Events.MANIFEST_PARSED,
+      Events.MANIFEST_PARSED,
       (_event: unknown, data: { levels: unknown[] }) => {
         if (window.__IBER__) window.__IBER__.levels = data.levels.length
         video?.play().catch(() => {})
@@ -154,7 +167,7 @@ export async function initPlayout(
     )
 
     hls.on(
-      (await import('hls.js')).Events.ERROR,
+      Events.ERROR,
       (_evt: unknown, data: { fatal: boolean; type: string; details: string }) => {
         if (data.fatal) {
           setState('error', `Playback error: ${data.details}`)
@@ -173,8 +186,12 @@ export async function initPlayout(
 
   // --- Boot ---
   setState('loading', 'Loading schedule…')
-  const slots = await fetchParrilla()
+  const slots = await fetchSafely()
   const active = resolveActiveSlot(slots)
+
+  // The boundary timer re-checks every minute, so a failed/empty parrilla
+  // recovers on its own once the backend or schedule appears. No crash loop.
+  scheduleNextBoundary()
 
   if (!active) {
     setState('empty', 'No content scheduled')
@@ -182,5 +199,4 @@ export async function initPlayout(
   }
 
   await playSlot(active)
-  scheduleNextBoundary()
 }

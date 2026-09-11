@@ -96,12 +96,14 @@ async function fetchViaP2P(
 }
 
 /**
- * Loader constructor bound to a Helia node + root CID. With node == null
- * (nop2p mode or failed startup) it is a thin cache wrapper around the
- * stock XhrLoader.
+ * Loader constructor bound to a Helia node getter + root CID. The getter is
+ * consulted per-load: playback starts gateway-only, and P2P automatically
+ * kicks in once the node is started and has peers. With the getter returning
+ * null (nop2p mode, failed startup, or still starting) it is a thin cache
+ * wrapper around the stock XhrLoader.
  */
 export function createIberLoader(
-  node: IberNode | null,
+  getNode: () => IberNode | null,
   rootCid: string,
   fetchStats: FetchStats,
   onActivity?: ActivityCallback
@@ -153,6 +155,7 @@ export function createIberLoader(
 
       // 2. P2P over bitswap/WebRTC: skipped gateway-only (node == null), when
       // the node never fully started, or when there are no peers yet.
+      const node = getNode()
       const canP2P =
         node !== null &&
         node.started &&

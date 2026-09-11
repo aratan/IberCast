@@ -7,7 +7,10 @@ import {
   type FetchStats
 } from './loader'
 import { initPlayout } from './viewer/playout'
-import { DashboardView } from './dashboard/index'
+import { WallView } from './wall'
+import { requireAdminToken } from './admin/login'
+import { AdminDashboard } from './admin/dashboard'
+import { gatewayBase } from './gateway'
 
 // --- E2E test hooks -------------------------------------------------------
 declare global {
@@ -28,31 +31,54 @@ declare global {
 }
 
 const params = new URLSearchParams(location.search)
-const mode = params.get('mode') || 'viewer'
-const MODE_HANDLED = mode === 'dashboard' || mode === 'viewer'
+let mode = params.get('mode') || 'wall'
+// Valid modes: wall, admin|dashboard, viewer, legacy
+// Design names the admin mode "dashboard"; keep "admin" as backward-compatible alias.
+if (mode === 'dashboard') mode = 'admin'
+
+// Hide all containers, then show the active one
+function hideAll(): void {
+  for (const id of ['wall-root', 'admin-root', 'viewer', 'legacy']) {
+    const el = document.getElementById(id)
+    if (el) el.style.display = 'none'
+  }
+}
+
+function show(id: string): HTMLElement | null {
+  const el = document.getElementById(id)
+  // Explicit block: CSS keeps non-active modes hidden (display:none).
+  if (el) el.style.display = 'block'
+  return el
+}
 
 // --- MODE ROUTING ---
-// ?mode=dashboard → Dashboard UI
-// ?mode=viewer    → TV Playout (auto-play from parrilla)
-// (default)       → Legacy manual CID input (for backwards compatibility)
-if (mode === 'dashboard') {
-  const root = document.getElementById('dashboard-root')
-  if (root) root.style.display = 'block'
-  const viewerEl = document.getElementById('viewer')
-  if (viewerEl) viewerEl.style.display = 'none'
-  const legacyEl = document.getElementById('legacy')
-  if (legacyEl) legacyEl.style.display = 'none'
+// ?mode=wall     → Video wall (default, public)
+// ?mode=admin    → Admin dashboard (token required)
+// ?mode=viewer   → TV Playout (auto-play from parrilla)
+// ?mode=legacy   → Legacy manual CID input
+// ?cid=...       → Legacy mode (backwards compatible)
+
+const effectiveMode = params.get('cid') ? 'legacy' : mode
+
+if (effectiveMode === 'wall') {
+  hideAll()
+  const root = show('wall-root')!
   const apiBase = params.get('api') || location.origin
-  DashboardView(root!, apiBase)
-  // Boot complete — legacy init below is skipped via MODE_HANDLED guard.
+  WallView(root, apiBase)
 }
-if (mode === 'viewer') {
-  const viewerEl = document.getElementById('viewer')
-  if (viewerEl) viewerEl.style.display = 'block'
-  const dashboardEl = document.getElementById('dashboard-root')
-  if (dashboardEl) dashboardEl.style.display = 'none'
-  const legacyEl = document.getElementById('legacy')
-  if (legacyEl) legacyEl.style.display = 'none'
+
+if (effectiveMode === 'admin') {
+  hideAll()
+  const root = show('admin-root')!
+  const apiBase = params.get('api') || location.origin
+  requireAdminToken(apiBase).then((token) => {
+    if (token) AdminDashboard(root, apiBase, token)
+  })
+}
+
+if (effectiveMode === 'viewer') {
+  hideAll()
+  show('viewer')
   const apiBase = params.get('api') || location.origin
   const channelId = params.get('channelId') || 'default'
   initPlayout(channelId, apiBase, {
@@ -62,9 +88,9 @@ if (mode === 'viewer') {
 }
 
 // --- Legacy mode: manual CID input (backwards compatible) ---
-if (!MODE_HANDLED) {
-const legacyEl = document.getElementById('legacy')
-if (legacyEl) legacyEl.style.display = 'block'
+if (effectiveMode === 'legacy') {
+hideAll()
+show('legacy')
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
   document.getElementById(id) as T
@@ -81,8 +107,6 @@ let hls: Hls | null = null
 let safetyTimer: ReturnType<typeof setTimeout> | null = null
 let playGeneration = 0
 
-// Optional overrides: /?cid=...&gw=https://mygateway.example
-const GATEWAY = params.get('gw') || 'https://ipfs.io'
 const cidFromUrl = params.get('cid')
 
 let readyResolve: (ok: boolean) => void = () => {}
@@ -116,29 +140,19 @@ function setStatus(s: string): void {
   if (window.__IBER__) window.__IBER__.status = s
 }
 
-// --- Indicador de actividad (feedback sutil de red) -----------------------
-// Muestra si se está descargando un segmento, si se reproduce en calma, o si
-// el navegador está sin conexión. No pretende ser llamativo: solo claridad.
 let activityIdleTimer: ReturnType<typeof setTimeout> | null = null
 
-function setActivity(
-  cls: '' | 'busy' | 'warn' | 'err',
-  text: string
-): void {
+function setActivity(cls: '' | 'busy' | 'warn' | 'err', text: string): void {
   activityEl.className = cls
   activityTxt.textContent = text
 }
 
 function markActivityBusy(label: string): void {
-  if (activityIdleTimer) {
-    clearTimeout(activityIdleTimer)
-    activityIdleTimer = null
-  }
+  if (activityIdleTimer) { clearTimeout(activityIdleTimer); activityIdleTimer = null }
   setActivity('busy', label)
 }
 
 function markActivityIdle(): void {
-  // Breve retardo: evita parpadear "descargando/reproduciendo" entre segmentos.
   activityIdleTimer = setTimeout(() => {
     activityIdleTimer = null
     setActivity('', navigator.onLine ? 'Reproduciendo' : 'Sin conexión')
@@ -146,10 +160,7 @@ function markActivityIdle(): void {
 }
 
 function markActivityOffline(): void {
-  if (activityIdleTimer) {
-    clearTimeout(activityIdleTimer)
-    activityIdleTimer = null
-  }
+  if (activityIdleTimer) { clearTimeout(activityIdleTimer); activityIdleTimer = null }
   setActivity('err', 'Sin conexión — revísalo')
 }
 
@@ -161,12 +172,9 @@ function handleActivity(a: ActivityState): void {
 window.addEventListener('online', () => {
   if (activityIdleTimer) clearTimeout(activityIdleTimer)
   setActivity('', 'Reproduciendo')
-  // Si hay un stream activo, relanza la carga tras volver online.
   if (hls && window.__IBER__.ready) hls.startLoad()
 })
 window.addEventListener('offline', markActivityOffline)
-
-// -------------------------------------------------------------------------
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`
@@ -187,7 +195,6 @@ function renderStats(): void {
 
 setInterval(renderStats, 1000)
 
-// CID validation: base58 (Qm…) or base32 (bafy…)
 const CID_RE = /^(Qm[a-zA-Z0-9]{44}|bafy[a-zA-Z0-9]+)$/
 
 async function play(cid: string): Promise<void> {
@@ -196,35 +203,26 @@ async function play(cid: string): Promise<void> {
     readyResolve(false)
     return
   }
-
   if (!CID_RE.test(cid)) {
     setStatus('❌ CID no válido. Usa un CID IPFS (bafy… o Qm…).')
     readyResolve(false)
     return
   }
 
-  // Reset state for new play() call
   playGeneration++
   resetIberState()
   setActivity('', 'Cargando…')
-  if (safetyTimer !== null) {
-    clearTimeout(safetyTimer)
-    safetyTimer = null
-  }
+  if (safetyTimer !== null) { clearTimeout(safetyTimer); safetyTimer = null }
 
   if (!node) {
     if (params.get('nop2p') === '1') {
-      // Fast path gateway-only (E2E y entornos sin WebRTC): sin nodo Helia.
       setStatus('ℹ️ Modo nop2p: reproducción solo por gateway')
     } else {
       setStatus('⏳ Arrancando nodo IPFS en el navegador…')
       try {
         node = await createIberNode()
-        if (!node.started) {
-          setStatus('⚠️ P2P no disponible en este entorno; reproduciendo solo por gateway')
-        }
+        if (!node.started) setStatus('⚠️ P2P no disponible; reproduciendo solo por gateway')
       } catch (err) {
-        // Degradación elegante: sin P2P se reproduce igualmente por gateway.
         setStatus(`⚠️ P2P no disponible (${(err as Error).message}); solo gateway`)
         node = null
       }
@@ -233,17 +231,13 @@ async function play(cid: string): Promise<void> {
 
   setStatus('⏳ Buscando el manifiesto en la red…')
 
-  if (hls) {
-    hls.destroy()
-    hls = null
-  }
+  if (hls) { hls.destroy(); hls = null }
 
-  const masterUrl = `${GATEWAY}/ipfs/${cid}/master.m3u8`
+  const masterUrl = `${gatewayBase(cid)}/master.m3u8`
   const generation = playGeneration
 
   hls = new Hls({
-    // node == null => loader en modo solo-gateway (nop2p o fallo de arranque)
-    loader: createIberLoader(node, cid, stats, handleActivity),
+    loader: createIberLoader(() => node, cid, stats, handleActivity),
     enableWorker: false,
     progressive: false,
     debug: params.get('debug') === '1'
@@ -289,7 +283,6 @@ async function play(cid: string): Promise<void> {
   hls.loadSource(masterUrl)
   hls.attachMedia(video)
 
-  // Safety net: if nothing produces metadata in 90s, report failure.
   safetyTimer = setTimeout(() => {
     if (generation !== playGeneration) return
     safetyTimer = null
@@ -297,13 +290,8 @@ async function play(cid: string): Promise<void> {
   }, 90_000)
 }
 
-$('go').addEventListener('click', () => {
-  void play(cidInput.value.trim())
-})
-
-cidInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') void play(cidInput.value.trim())
-})
+$('go').addEventListener('click', () => { void play(cidInput.value.trim()) })
+cidInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') void play(cidInput.value.trim()) })
 
 void (async () => {
   renderStats()

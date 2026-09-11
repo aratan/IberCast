@@ -4,7 +4,7 @@ import { ScheduleView } from './schedule'
 /**
  * Dashboard: composes catalogue + schedule views inside the dashboard container.
  */
-export function DashboardView(rootEl: HTMLElement, apiBase: string): void {
+export function DashboardView(rootEl: HTMLElement, apiBase: string, token?: string): void {
   // Create tab navigation
   const tabs = document.createElement('div')
   tabs.className = 'dashboard-tabs'
@@ -65,16 +65,16 @@ export function DashboardView(rootEl: HTMLElement, apiBase: string): void {
   function rebuildSchedule(): void {
     scheduleContainer.innerHTML = ''
     scheduleRefresh = null
-    const view = ScheduleView(scheduleContainer, apiBase, currentChannel)
+    const view = ScheduleView(scheduleContainer, apiBase, currentChannel, token)
     scheduleRefresh = view.refresh
   }
 
   // Init catalogue
-  const catView = CatalogueView(catalogueContainer, apiBase)
+  const catView = CatalogueView(catalogueContainer, apiBase, token)
   catalogueRefresh = catView.refresh
 
   // Init schedule
-  const schedView = ScheduleView(scheduleContainer, apiBase, currentChannel)
+  const schedView = ScheduleView(scheduleContainer, apiBase, currentChannel, token)
   scheduleRefresh = schedView.refresh
 
   // Tab switching

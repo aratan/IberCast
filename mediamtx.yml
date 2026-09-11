@@ -1,0 +1,33 @@
+# IberCast — MediaMTX ingest (OBS → RTMP → HLS).
+#
+# - RTMP on :1935 (LAN reachable, OBS pushes here)
+# - HLS on 127.0.0.1:8888 (internal only; ibercastd proxies it same-origin)
+# - Control API on 127.0.0.1:9997 (internal only; ibercastd polls liveness)
+
+logLevel: info
+
+# Control API
+api: true
+apiAddress: 127.0.0.1:9997
+
+# RTMP ingest
+rtmp: true
+rtmpAddress: :1935
+rtmpEncryption: "no"
+
+# HLS output (internal; ibercastd /api/live/hls/* proxies it)
+hls: true
+hlsAddress: 127.0.0.1:8888
+hlsAllowOrigins: ["*"]
+hlsAlwaysRemux: true
+hlsVariant: mpegts
+hlsSegmentCount: 7
+
+# OBS: OBS pushes to rtmp://<host>:1935/live/ic_xxx
+# MediaMTX accepts any incoming path by default when no explicit paths are defined.
+
+paths:
+  # OBS pushes to rtmp://<host>:1935/live/ic_<key>. all_others matches any
+  # incoming path name (dynamic paths are created on demand).
+  all_others:
+    source: publisher
