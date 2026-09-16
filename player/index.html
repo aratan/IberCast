@@ -53,6 +53,23 @@
     .wall-section-header h3 { font-size: 1.15rem; font-weight: 700; }
     .wall-count { color: var(--muted); font-size: .8rem; }
 
+    /* Channel filter tabs */
+    .wall-filter-bar {
+      width: 100%; max-width: 1200px; padding: 4px 32px 0;
+      display: flex; gap: 8px; flex-wrap: wrap;
+    }
+    .wall-filter {
+      padding: 6px 16px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+      font-size: .82rem; font-weight: 600; transition: color .15s, border-color .15s, background .15s;
+    }
+    .wall-filter:hover { color: var(--text); border-color: #2a3a4c; }
+    .wall-filter.active { background: var(--accent); border-color: var(--accent); color: #06281a; }
+    .wall-empty--page {
+      width: 100%; max-width: 1200px; padding: 48px 32px;
+      text-align: center; color: var(--muted); font-size: .9rem;
+    }
+
     .wall-grid {
       width: 100%; max-width: 1200px; padding: 0 32px 48px;
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;

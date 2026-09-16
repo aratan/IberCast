@@ -25,6 +25,7 @@ type Video struct {
 	CID         string  `json:"cid"`
 	HLSUrl      string  `json:"hlsUrl"`
 	Duration    float64 `json:"duration"`
+	ChannelID   string  `json:"channelId,omitempty"` // empty means "default"
 	Qualities   []QualityInfo `json:"qualities,omitempty"`
 	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
 }
@@ -161,13 +162,15 @@ func (s *Store) loadOrCreate() error {
 		return err
 	}
 
-	// Default channel if none exist
+	// Default channels if none exist
 	if len(s.channels) == 0 {
 		s.channels = []Channel{
 			{ID: "default", Name: "IberCast", Description: "Default channel"},
+			{ID: "peliculas", Name: "Películas", Description: "Canal de películas"},
+			{ID: "noticias", Name: "Noticias", Description: "Canal de noticias"},
 		}
 		if err := s.writeJSON("channels.json", s.channels); err != nil {
-			return fmt.Errorf("init default channel: %w", err)
+			return fmt.Errorf("init default channels: %w", err)
 		}
 	}
 	// Keep ads/effects collections materialised so they survive restart

@@ -270,6 +270,28 @@ func uploadVideo(deps *ServerDeps) http.HandlerFunc {
 			title = "Untitled"
 		}
 
+		// Channel assignment (VOD classification). Empty → "default"; unknown
+		// channel IDs are rejected so the wall sections always resolve.
+		channelID := strings.TrimSpace(r.FormValue("channelId"))
+		if channelID == "" {
+			channelID = "default"
+		}
+		if !safeID(channelID) {
+			writeError(w, http.StatusBadRequest, "invalid channelId")
+			return
+		}
+		channelKnown := false
+		for _, ch := range deps.Store.Channels() {
+			if ch.ID == channelID {
+				channelKnown = true
+				break
+			}
+		}
+		if !channelKnown {
+			writeError(w, http.StatusBadRequest, "unknown channelId")
+			return
+		}
+
 		file, header, err := r.FormFile("file")
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "missing file field")
@@ -365,11 +387,12 @@ func uploadVideo(deps *ServerDeps) http.HandlerFunc {
 		}
 
 		video := store.Video{
-			ID:       generateID(),
-			Title:    title,
-			CID:      result.CID,
-			HLSUrl:   result.HLSUrl,
-			Duration: result.Duration,
+			ID:        generateID(),
+			Title:     title,
+			CID:       result.CID,
+			HLSUrl:    result.HLSUrl,
+			Duration:  result.Duration,
+			ChannelID: channelID,
 			Qualities: qInfos,
 		}
 

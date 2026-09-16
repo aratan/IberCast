@@ -1,6 +1,10 @@
 /**
  * WallView: Netflix/YouTube-style video wall with hero + responsive grid.
  * Public-facing — no auth required.
+ *
+ * Videos are grouped by channel (data/videos.json `channelId`): each channel
+ * known to the API gets its own section; videos with an empty/unknown
+ * channelId land in the "IberCast" (default) section.
  */
 import { openPlayer } from './player-modal'
 import { gatewayBase } from './gateway'
@@ -11,6 +15,7 @@ interface WallVideo {
   cid: string
   hlsUrl: string
   duration: number
+  channelId?: string
   thumbnailUrl?: string
   qualities?: Array<{ name: string; label: string; bitrate: number }>
 }
@@ -22,6 +27,11 @@ interface WallLive {
   status: string
   streamKey?: string
   hlsUrl?: string
+}
+
+interface WallChannel {
+  id: string
+  name: string
 }
 
 function fmtDuration(seconds: number): string {
@@ -68,22 +78,59 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
   liveSection.style.display = 'none'
   rootEl.appendChild(liveSection)
 
-  // Section header
-  const sectionHeader = document.createElement('div')
-  sectionHeader.className = 'wall-section-header'
-  sectionHeader.innerHTML = `<h3>Todos los videos</h3><span class="wall-count" id="wall-count"></span>`
-  rootEl.appendChild(sectionHeader)
+  // Channel filter tabs (populated from /api/channels)
+  const filterBar = document.createElement('div')
+  filterBar.className = 'wall-filter-bar'
+  filterBar.id = 'wall-filter-bar'
+  rootEl.appendChild(filterBar)
 
-  // Video grid
-  const grid = document.createElement('div')
-  grid.className = 'wall-grid'
-  grid.id = 'wall-grid'
-  rootEl.appendChild(grid)
-
-  // Loading state
-  grid.innerHTML = `<div class="wall-loading">Cargando videos…</div>`
+  // Sections container: one header + grid per channel
+  const sections = document.createElement('div')
+  sections.id = 'wall-sections'
+  rootEl.appendChild(sections)
 
   let allVideos: WallVideo[] = []
+  let channels: WallChannel[] = []
+  let activeFilter = 'all'
+
+  async function loadChannels(): Promise<void> {
+    try {
+      const res = await fetch(`${apiBase}/api/channels`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data: WallChannel[] = await res.json()
+      channels = Array.isArray(data) && data.length > 0
+        ? data
+        : [{ id: 'default', name: 'IberCast' }]
+    } catch {
+      channels = [{ id: 'default', name: 'IberCast' }, { id: 'peliculas', name: 'Películas' }, { id: 'noticias', name: 'Noticias' }]
+    }
+    renderFilterBar()
+  }
+
+  function renderFilterBar(): void {
+    const bar = document.getElementById('wall-filter-bar')
+    if (!bar) return
+    const tabs: Array<{ id: string; name: string }> = [
+      { id: 'all', name: 'Todos' },
+      ...channels
+    ]
+    bar.innerHTML = tabs
+      .map(
+        (t) => `
+      <button class="wall-filter ${activeFilter === t.id ? 'active' : ''}" data-channel="${escapeHtml(t.id)}">${escapeHtml(t.name)}</button>
+    `
+      )
+      .join('')
+
+    bar.querySelectorAll('.wall-filter').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        activeFilter = (btn as HTMLElement).dataset.channel!
+        renderFilterBar()
+        renderSections()
+        renderLiveSection(allLive.filter((s) => s.status === 'live'))
+      })
+    })
+  }
 
   async function loadVideos(): Promise<void> {
     try {
@@ -92,7 +139,7 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
       const ct = res.headers.get('content-type') || ''
       if (!ct.includes('json')) throw new Error(`not a JSON response (${ct})`)
       allVideos = await res.json()
-      renderGrid(allVideos)
+      renderSections()
       updateHero(allVideos)
     } catch (e) {
       // dev fallback: if the origin isn't the API (e.g. vite preview on :4173
@@ -103,13 +150,13 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
           const res2 = await fetch(`${dev}/api/videos`)
           if (res2.ok && (res2.headers.get('content-type') || '').includes('json')) {
             allVideos = await res2.json()
-            renderGrid(allVideos)
+            renderSections()
             updateHero(allVideos)
             return
           }
         } catch { /* keep original error */ }
       }
-      grid.innerHTML = `<div class="wall-empty">No se pudieron cargar los videos: ${(e as Error).message}</div>`
+      document.getElementById('wall-sections')!.innerHTML = `<div class="wall-empty wall-empty--page">No se pudieron cargar los videos: ${(e as Error).message}</div>`
     }
   }
 
@@ -134,18 +181,25 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
     cta.onclick = () => openPlayer(featured)
   }
 
-  function renderGrid(videos: WallVideo[]): void {
-    if (videos.length === 0) {
-      grid.innerHTML = `<div class="wall-empty">No hay videos disponibles. Sube contenido desde el <a href="?mode=admin">panel de administración</a>.</div>`
-      return
+  /** Group videos by channelId in the order of /api/channels (default first). */
+  function groupByChannel(videos: WallVideo[]): Array<{ channel: WallChannel; videos: WallVideo[] }> {
+    const byId = new Map<string, WallVideo[]>()
+    for (const v of videos) {
+      const cid = v.channelId && channels.some((c) => c.id === v.channelId) ? v.channelId : 'default'
+      const list = byId.get(cid) ?? []
+      list.push(v)
+      byId.set(cid, list)
     }
+    const groups: Array<{ channel: WallChannel; videos: WallVideo[] }> = []
+    for (const ch of channels) {
+      const list = byId.get(ch.id)
+      if (list && list.length > 0) groups.push({ channel: ch, videos: list })
+    }
+    return groups
+  }
 
-    const countEl = document.getElementById('wall-count')
-    if (countEl) countEl.textContent = `${videos.length} videos`
-
-    grid.innerHTML = videos
-      .map(
-        (v) => `
+  function cardHtml(v: WallVideo): string {
+    return `
       <div class="wall-card" data-id="${v.id}">
         <div class="wall-card-thumb">
           <img src="${thumbnailSrc(v)}" alt="" loading="lazy" onerror="this.style.display='none'" />
@@ -160,11 +214,10 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
         </div>
       </div>
     `
-      )
-      .join('')
+  }
 
-    // Click handlers
-    grid.querySelectorAll('.wall-card').forEach((card) => {
+  function bindCards(container: HTMLElement, videos: WallVideo[]): void {
+    container.querySelectorAll('.wall-card').forEach((card) => {
       const id = (card as HTMLElement).dataset.id!
       const video = videos.find((v) => v.id === id)
       if (!video) return
@@ -183,23 +236,83 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
     })
   }
 
+  function renderSections(): void {
+    const root = document.getElementById('wall-sections')
+    if (!root) return
+
+    const visible = activeFilter === 'all' ? allVideos : allVideos.filter((v) => (v.channelId || 'default') === activeFilter)
+    const countEl = document.getElementById('wall-count')
+
+    if (allVideos.length === 0) {
+      if (countEl) countEl.textContent = ''
+      root.innerHTML = `<div class="wall-empty wall-empty--page">No hay videos disponibles. Sube contenido desde el <a href="?mode=admin">panel de administración</a>.</div>`
+      return
+    }
+
+    if (countEl) countEl.textContent = `${visible.length} ${visible.length === 1 ? 'video' : 'videos'}`
+
+    if (visible.length === 0) {
+      const ch = channels.find((c) => c.id === activeFilter)
+      root.innerHTML = `<div class="wall-empty wall-empty--page">Aún no hay videos en el canal ${escapeHtml(ch?.name ?? activeFilter)}.</div>`
+      return
+    }
+
+    // Filtered view: single flat grid with all matching videos.
+    if (activeFilter !== 'all') {
+      root.innerHTML = `<div class="wall-grid">${visible.map(cardHtml).join('')}</div>`
+      bindCards(root, visible)
+      return
+    }
+
+    // "Todos": one section per channel that has videos.
+    const groups = groupByChannel(allVideos)
+    root.innerHTML = groups
+      .map(
+        (g) => `
+      <div class="wall-section">
+        <div class="wall-section-header">
+          <h3>${escapeHtml(g.channel.name)}</h3>
+          <span class="wall-count">${g.videos.length} ${g.videos.length === 1 ? 'video' : 'videos'}</span>
+        </div>
+        <div class="wall-grid">${g.videos.map(cardHtml).join('')}</div>
+      </div>
+    `
+      )
+      .join('')
+
+    for (const g of groups) {
+      const section = root.querySelector(`.wall-section:has(.wall-card[data-id="${g.videos[0].id}"])`)
+      if (section) bindCards(section as HTMLElement, g.videos)
+    }
+  }
+
   // --- Live section (refreshed every 10s) ---
+  let allLive: WallLive[] = []
+
   async function loadLiveStreams(): Promise<void> {
     try {
       const res = await fetch(`${apiBase}/api/live`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data: unknown = await res.json()
-      const all: WallLive[] = Array.isArray(data) ? data : []
-      renderLiveSection(all.filter((s) => s.status === 'live'))
+      allLive = Array.isArray(data) ? data : []
+      renderLiveSection(allLive.filter((s) => s.status === 'live'))
     } catch {
       /* keep previous state; wall stays usable without live */
     }
   }
 
+  /** Channel display name from /api/channels; falls back to the raw id. */
+  function channelName(id?: string): string {
+    if (!id) return 'IberCast'
+    return channels.find((c) => c.id === id)?.name ?? id
+  }
+
   function renderLiveSection(live: WallLive[]): void {
     const section = document.getElementById('wall-live-section')
     if (!section) return
-    if (live.length === 0) {
+    // Respect the channel filter; hide the block when nothing matches.
+    const visible = activeFilter === 'all' ? live : live.filter((s) => (s.channelId || 'default') === activeFilter)
+    if (visible.length === 0) {
       section.style.display = 'none'
       section.innerHTML = ''
       return
@@ -208,11 +321,11 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
     section.style.display = 'block'
     section.innerHTML = `
       <div class="wall-section-header">
-        <h3><span class="wall-live-dot"></span> En directo</h3>
-        <span class="wall-count">${live.length} en emisión</span>
+        <h3><span class="wall-live-dot"></span> En directo${activeFilter !== 'all' ? ` · ${escapeHtml(channelName(activeFilter))}` : ''}</h3>
+        <span class="wall-count">${visible.length} en emisión</span>
       </div>
       <div class="wall-grid wall-grid--live">
-        ${live
+        ${visible
           .map(
             (s) => `
           <div class="wall-card" data-live-id="${s.id}">
@@ -224,7 +337,7 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
             </div>
             <div class="wall-card-info">
               <div class="wall-card-title">${escapeHtml(s.title)}</div>
-              <div class="wall-card-sub">${s.channelId ? escapeHtml(s.channelId) : 'en directo'}</div>
+              <div class="wall-card-sub">${escapeHtml(channelName(s.channelId))}</div>
             </div>
           </div>
         `
@@ -235,7 +348,7 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
 
     section.querySelectorAll('.wall-card').forEach((card) => {
       const id = (card as HTMLElement).dataset.liveId!
-      const stream = live.find((s) => s.id === id)
+      const stream = visible.find((s) => s.id === id)
       if (!stream || !stream.hlsUrl) return
       const open = () =>
         openPlayer({ id: stream.id, title: stream.title, cid: '', hlsUrl: stream.hlsUrl!, duration: 0 })
@@ -251,6 +364,7 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
     })
   }
 
+  loadChannels()
   loadVideos()
   loadLiveStreams()
   setInterval(loadLiveStreams, 10000)

@@ -7,7 +7,13 @@ export interface CatalogueVideo {
   cid: string
   hlsUrl: string
   duration: number
+  channelId?: string
   thumbnailUrl?: string
+}
+
+export interface CatalogueChannel {
+  id: string
+  name: string
 }
 
 const ALLOWED_VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mkv', '.avi', '.mov', '.ts', '.m3u8', '.mpg', '.mpeg'])
@@ -32,6 +38,11 @@ export function CatalogueView(
   uploadForm.className = 'catalogue-upload'
   uploadForm.innerHTML = `
     <input type="text" placeholder="Title" name="title" />
+    <select name="channel" class="upload-channel" title="Canal del vídeo">
+      <option value="default" selected>Canal: IberCast</option>
+      <option value="peliculas">Canal: Películas</option>
+      <option value="noticias">Canal: Noticias</option>
+    </select>
     <div class="upload-drop-zone" role="button" tabindex="0">
       <span class="drop-hint">Drag a video here or click to browse</span>
       <input type="file" name="file" accept="video/*" class="drop-file-input" />
@@ -40,6 +51,21 @@ export function CatalogueView(
     <span class="upload-status"></span>
   `
   container.appendChild(uploadForm)
+
+  // Populate the channel selector from the API (seed values above as fallback).
+  void (async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/channels`)
+      if (!res.ok) return
+      const channels: CatalogueChannel[] = await res.json()
+      const select = uploadForm.querySelector('select[name="channel"]') as HTMLSelectElement
+      const current = select.value
+      select.innerHTML = channels
+        .map((ch) => `<option value="${escapeHtml(ch.id)}">Canal: ${escapeHtml(ch.name)}</option>`)
+        .join('')
+      if (channels.some((ch) => ch.id === current)) select.value = current
+    } catch { /* keep static fallback options */ }
+  })()
 
   const statusEl = uploadForm.querySelector('.upload-status') as HTMLSpanElement
   const dropZone = uploadForm.querySelector('.upload-drop-zone') as HTMLElement
@@ -109,7 +135,7 @@ export function CatalogueView(
         ${v.thumbnailUrl ? `<div class="catalogue-thumb" style="background-image:url('${escapeHtml(v.thumbnailUrl)}')"></div>` : ''}
         <div class="catalogue-info">
           <div class="catalogue-title">${escapeHtml(v.title)}</div>
-          <div class="catalogue-meta">${formatDuration(v.duration)} · ${v.cid.slice(0, 12)}…</div>
+          <div class="catalogue-meta">${escapeHtml(v.channelId || 'default')} · ${formatDuration(v.duration)} · ${v.cid.slice(0, 12)}…</div>
         </div>
         <button class="catalogue-delete" data-id="${v.id}" title="Delete">✕</button>
       </div>
@@ -155,6 +181,8 @@ export function CatalogueView(
     statusEl.className = 'upload-status busy'
     const formData = new FormData()
     formData.append('title', title)
+    const channel = (uploadForm.querySelector('select[name="channel"]') as HTMLSelectElement).value || 'default'
+    formData.append('channelId', channel)
     formData.append('file', file, file.name)
     try {
       // Note: do NOT set Content-Type manually — fetch sets the multipart boundary.
