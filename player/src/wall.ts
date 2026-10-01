@@ -1,22 +1,18 @@
 /**
- * WallView: Netflix/YouTube-style video wall with hero + responsive grid.
- * Public-facing — no auth required.
+ * WallView: the public landing page.
+ *
+ * Layout borrows from two places on purpose — a Netflix-style cinematic hero
+ * plus horizontally scrollable shelves with hover arrows, and a YouTube-style
+ * sticky top bar with search. Cards open WatchView (see ./player-modal).
  *
  * Videos are grouped by channel (data/videos.json `channelId`): each channel
- * known to the API gets its own section; videos with an empty/unknown
- * channelId land in the "IberCast" (default) section.
+ * known to the API gets its own rail; videos with an empty/unknown
+ * channelId land in the "IberCast" (default) rail.
  */
-import { openPlayer } from './player-modal'
+import { openPlayer, closePlayer, getProgress, type PlayerVideo } from './player-modal'
 import { gatewayBase } from './gateway'
 
-interface WallVideo {
-  id: string
-  title: string
-  cid: string
-  hlsUrl: string
-  duration: number
-  channelId?: string
-  thumbnailUrl?: string
+interface WallVideo extends PlayerVideo {
   qualities?: Array<{ name: string; label: string; bitrate: number }>
 }
 
@@ -34,6 +30,16 @@ interface WallChannel {
   name: string
 }
 
+const ICON_PLAY = 'M8 5v14l11-7z'
+const ICON_CHEVRON = 'M8.6 5.4 7.2 4 1.2 10l6 6 1.4-1.4L4 10z'
+const ICON_LOGO = 'M4 3.5v17l15-8.5z'
+const ICON_SEARCH = 'M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5-5-5zm-6 0a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9z'
+const ICON_ADMIN = 'M12 1 3 5v6c0 5.6 3.8 10.7 9 12 5.2-1.3 9-6.4 9-12V5l-9-4zm0 10.5h7c-.5 4-3.2 7.4-7 8.4V11.5H5V6.3l7-3.1v8.3z'
+
+function icon(path: string): string {
+  return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`
+}
+
 function fmtDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
@@ -48,8 +54,16 @@ function escapeHtml(s: string): string {
   )
 }
 
-function thumbnailSrc(v: WallVideo): string {
-  if (v.thumbnailUrl) return v.thumbnailUrl
+function thumbnailSrc(v: PlayerVideo): string {
+  // The API returns a root-relative IPFS path (/ipfs/{cid}/thumb.jpg). The
+  // gateway base is already CID-scoped (subdomain form), so only the file
+  // name is appended — re-appending /ipfs/{cid} would build a bogus path.
+  if (v.thumbnailUrl) {
+    if (/^https?:\/\//i.test(v.thumbnailUrl)) return v.thumbnailUrl
+    const file = v.thumbnailUrl.split('/').pop()
+    if (!file) return ''
+    return `${gatewayBase(v.cid)}/${file}`
+  }
   if (v.cid) return `${gatewayBase(v.cid)}/thumb.jpg`
   return ''
 }
@@ -57,79 +71,158 @@ function thumbnailSrc(v: WallVideo): string {
 export function WallView(rootEl: HTMLElement, apiBase: string): void {
   rootEl.innerHTML = ''
 
-  // Hero section
-  const hero = document.createElement('div')
-  hero.className = 'wall-hero'
-  hero.innerHTML = `
-    <div class="wall-hero-bg"></div>
-    <div class="wall-hero-content">
-      <div class="wall-hero-badge">IBERCAST</div>
-      <h2 class="wall-hero-title">Streaming P2P sobre IPFS</h2>
-      <p class="wall-hero-desc">Cada espectador reparte fragmentos vía WebRTC — sin servidores centrales</p>
-      <button class="wall-hero-cta" id="wall-hero-play">▶ Ver contenido</button>
-    </div>
-  `
-  rootEl.appendChild(hero)
-
-  // Live section (refreshed every 10s)
-  const liveSection = document.createElement('div')
-  liveSection.className = 'wall-live-section'
-  liveSection.id = 'wall-live-section'
-  liveSection.style.display = 'none'
-  rootEl.appendChild(liveSection)
-
-  // Channel filter tabs (populated from /api/channels)
-  const filterBar = document.createElement('div')
-  filterBar.className = 'wall-filter-bar'
-  filterBar.id = 'wall-filter-bar'
-  rootEl.appendChild(filterBar)
-
-  // Sections container: one header + grid per channel
-  const sections = document.createElement('div')
-  sections.id = 'wall-sections'
-  rootEl.appendChild(sections)
+  // Internal links must carry ?api= so the target view keeps talking to the
+  // same daemon instead of falling back to location.origin.
+  const apiParam = apiBase && apiBase !== location.origin ? `&api=${encodeURIComponent(apiBase)}` : ''
 
   let allVideos: WallVideo[] = []
+  let allLive: WallLive[] = []
   let channels: WallChannel[] = []
-  let activeFilter = 'all'
+  let query = ''
+  let currentWatchId: string | null = null
+
+  /* ---------------------------------------------------------------
+     Shell
+     --------------------------------------------------------------- */
+
+  rootEl.innerHTML = `
+    <nav class="nav" id="wall-nav">
+      <a class="nav-brand" href="#inicio">
+        <span class="nav-mark">${icon(ICON_LOGO)}</span>
+        <span>Iber<b>Cast</b></span>
+      </a>
+      <div class="nav-links" id="nav-links"></div>
+      <div class="nav-search">
+        ${icon(ICON_SEARCH)}
+        <input type="search" id="wall-search" placeholder="Buscar títulos, canales…" aria-label="Buscar" />
+      </div>
+      <a class="nav-icon-btn" href="?mode=admin${apiParam}" title="Panel de administración">${icon(ICON_ADMIN)}</a>
+      <div class="nav-avatar" title="Invitado">IC</div>
+    </nav>
+
+    <section class="hero" id="hero">
+      <div class="hero-bg"></div>
+      <div class="hero-content">
+        <span class="hero-badge">DESTACADO</span>
+        <h2 class="hero-title" id="hero-title">Cargando catálogo…</h2>
+        <div class="hero-meta" id="hero-meta"></div>
+        <p class="hero-desc" id="hero-desc"></p>
+        <div class="hero-actions">
+          <button class="btn btn--play" id="hero-play">${icon(ICON_PLAY)}<span>Reproducir</span></button>
+          <button class="btn btn--ghost" id="hero-info">${icon(ICON_ADMIN)}<span>Más info</span></button>
+        </div>
+      </div>
+      <div class="hero-scroll-hint">Desplázate ↓</div>
+    </section>
+
+    <div class="rails" id="wall-rails"></div>
+  `
+
+  const nav = document.getElementById('wall-nav') as HTMLElement
+  const railsEl = document.getElementById('wall-rails') as HTMLElement
+  const hero = document.getElementById('hero') as HTMLElement
+  const heroTitle = document.getElementById('hero-title') as HTMLElement
+  const heroMeta = document.getElementById('hero-meta') as HTMLElement
+  const heroDesc = document.getElementById('hero-desc') as HTMLElement
+  const heroBg = hero.querySelector('.hero-bg') as HTMLElement
+  const heroPlay = document.getElementById('hero-play') as HTMLButtonElement
+  const heroInfo = document.getElementById('hero-info') as HTMLButtonElement
+  const searchInput = document.getElementById('wall-search') as HTMLInputElement
+  const navLinks = document.getElementById('nav-links') as HTMLElement
+
+  window.addEventListener('scroll', () => {
+    nav.classList.toggle('nav--solid', window.scrollY > 24)
+  }, { passive: true })
+
+  // Keeps ?q= in the URL as the user types so a filtered wall can be shared or
+  // reloaded. replaceState avoids flooding the back button.
+  function syncQueryParam(value: string): void {
+    const url = new URL(location.href)
+    if (value) url.searchParams.set('q', value)
+    else url.searchParams.delete('q')
+    history.replaceState(null, '', url)
+  }
+
+  searchInput.addEventListener('input', () => {
+    query = searchInput.value.trim().toLowerCase()
+    syncQueryParam(searchInput.value.trim())
+    renderRails()
+  })
+
+  // Seed the search box from ?q= so tag links (and shared URLs) land on a
+  // pre-filtered wall. Runs before the first renderRails() in loadVideos().
+  const initialQuery = new URLSearchParams(location.search).get('q')
+  if (initialQuery) {
+    searchInput.value = initialQuery
+    query = initialQuery.trim().toLowerCase()
+  }
+
+  /* ---------------------------------------------------------------
+     Watch view routing (hash: #watch/<id>)
+     --------------------------------------------------------------- */
+
+  function openWatch(video: PlayerVideo): void {
+    currentWatchId = video.id
+    location.hash = `/watch/${encodeURIComponent(video.id)}`
+    const related: WallVideo[] = [
+      ...allVideos.filter((v) => v.id !== video.id),
+      ...allLive
+        .filter((s) => s.status === 'live' && s.hlsUrl)
+        .map<WallVideo>((s) => ({
+          id: s.id,
+          title: s.title,
+          cid: '',
+          hlsUrl: s.hlsUrl!,
+          duration: 0,
+          channelId: s.channelId,
+          channelName: channelName(s.channelId)
+        }))
+    ]
+    openPlayer({ ...video, channelName: video.channelName || channelName(video.channelId) }, {
+      related,
+      onBack: () => {
+        if (location.hash.includes('/watch/')) history.back()
+        else closePlayer()
+      }
+    })
+  }
+
+  function syncWithHash(): void {
+    const match = /^#\/watch\/(.+)$/.exec(location.hash)
+    const id = match ? decodeURIComponent(match[1]!) : null
+    if (id) {
+      if (id === currentWatchId) return
+      const video =
+        allVideos.find((v) => v.id === id) ??
+        allLive
+          .filter((s) => s.status === 'live' && s.hlsUrl)
+          .map<WallVideo>((s) => ({
+            id: s.id, title: s.title, cid: '', hlsUrl: s.hlsUrl!, duration: 0, channelId: s.channelId
+          }))
+          .find((v) => v.id === id)
+      if (video) openWatch(video)
+    } else if (currentWatchId) {
+      currentWatchId = null
+      closePlayer()
+    }
+  }
+  window.addEventListener('hashchange', syncWithHash)
+
+  /* ---------------------------------------------------------------
+     Data
+     --------------------------------------------------------------- */
 
   async function loadChannels(): Promise<void> {
     try {
       const res = await fetch(`${apiBase}/api/channels`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data: WallChannel[] = await res.json()
-      channels = Array.isArray(data) && data.length > 0
-        ? data
-        : [{ id: 'default', name: 'IberCast' }]
+      channels = Array.isArray(data) && data.length > 0 ? data : [{ id: 'default', name: 'IberCast' }]
     } catch {
-      channels = [{ id: 'default', name: 'IberCast' }, { id: 'peliculas', name: 'Películas' }, { id: 'noticias', name: 'Noticias' }]
+      channels = [{ id: 'default', name: 'IberCast' }]
     }
-    renderFilterBar()
-  }
-
-  function renderFilterBar(): void {
-    const bar = document.getElementById('wall-filter-bar')
-    if (!bar) return
-    const tabs: Array<{ id: string; name: string }> = [
-      { id: 'all', name: 'Todos' },
-      ...channels
-    ]
-    bar.innerHTML = tabs
-      .map(
-        (t) => `
-      <button class="wall-filter ${activeFilter === t.id ? 'active' : ''}" data-channel="${escapeHtml(t.id)}">${escapeHtml(t.name)}</button>
-    `
-      )
-      .join('')
-
-    bar.querySelectorAll('.wall-filter').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        activeFilter = (btn as HTMLElement).dataset.channel!
-        renderFilterBar()
-        renderSections()
-        renderLiveSection(allLive.filter((s) => s.status === 'live'))
-      })
-    })
+    renderNavLinks()
+    renderHero()
   }
 
   async function loadVideos(): Promise<void> {
@@ -137,235 +230,335 @@ export function WallView(rootEl: HTMLElement, apiBase: string): void {
       const res = await fetch(`${apiBase}/api/videos`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const ct = res.headers.get('content-type') || ''
-      if (!ct.includes('json')) throw new Error(`not a JSON response (${ct})`)
-      allVideos = await res.json()
-      renderSections()
-      updateHero(allVideos)
+      if (!ct.includes('json')) throw new Error(`respuesta no JSON (${ct})`)
+      allVideos = (await res.json()) as WallVideo[]
     } catch (e) {
-      // dev fallback: if the origin isn't the API (e.g. vite preview on :4173
-      // while ibercastd runs on :8585), probe the local dev daemon.
+      // Dev fallback: the origin may be the Vite server while ibercastd runs
+      // on :8585.
+      allVideos = []
       if (typeof location !== 'undefined' && location.hostname === 'localhost') {
         try {
-          const dev = 'http://localhost:8585'
-          const res2 = await fetch(`${dev}/api/videos`)
-          if (res2.ok && (res2.headers.get('content-type') || '').includes('json')) {
-            allVideos = await res2.json()
-            renderSections()
-            updateHero(allVideos)
-            return
-          }
-        } catch { /* keep original error */ }
+          const res2 = await fetch('http://localhost:8585/api/videos')
+          if (res2.ok) allVideos = (await res2.json()) as WallVideo[]
+        } catch { /* fall through to the error state */ }
       }
-      document.getElementById('wall-sections')!.innerHTML = `<div class="wall-empty wall-empty--page">No se pudieron cargar los videos: ${(e as Error).message}</div>`
+      if (allVideos.length === 0) {
+        railsEl.innerHTML = `<div class="empty">
+          <h3>No se pudo cargar el catálogo</h3>
+          <p>${escapeHtml((e as Error).message)}</p>
+          <p><a href="?mode=admin${apiParam}">Abrir el panel de administración</a></p>
+        </div>`
+        hero.classList.add('hero--empty')
+        heroTitle.textContent = 'Catálogo no disponible'
+        return
+      }
     }
+    allVideos = allVideos.map((v) => ({ ...v, channelName: v.channelName || channelName(v.channelId) }))
+    renderHero()
+    renderRails()
+    syncWithHash()
   }
-
-  function updateHero(videos: WallVideo[]): void {
-    if (videos.length === 0) {
-      hero.classList.add('wall-hero--empty')
-      return
-    }
-    // Pick first video as featured
-    const featured = videos[0]
-    const bg = hero.querySelector('.wall-hero-bg') as HTMLElement
-    const ts = thumbnailSrc(featured)
-    if (ts) bg.style.backgroundImage = `url(${ts})`
-
-    const title = hero.querySelector('.wall-hero-title') as HTMLElement
-    title.textContent = featured.title
-
-    const desc = hero.querySelector('.wall-hero-desc') as HTMLElement
-    desc.textContent = `${fmtDuration(featured.duration)} · ${featured.qualities?.length ?? 1} quality levels`
-
-    const cta = hero.querySelector('#wall-hero-play') as HTMLButtonElement
-    cta.onclick = () => openPlayer(featured)
-  }
-
-  /** Group videos by channelId in the order of /api/channels (default first). */
-  function groupByChannel(videos: WallVideo[]): Array<{ channel: WallChannel; videos: WallVideo[] }> {
-    const byId = new Map<string, WallVideo[]>()
-    for (const v of videos) {
-      const cid = v.channelId && channels.some((c) => c.id === v.channelId) ? v.channelId : 'default'
-      const list = byId.get(cid) ?? []
-      list.push(v)
-      byId.set(cid, list)
-    }
-    const groups: Array<{ channel: WallChannel; videos: WallVideo[] }> = []
-    for (const ch of channels) {
-      const list = byId.get(ch.id)
-      if (list && list.length > 0) groups.push({ channel: ch, videos: list })
-    }
-    return groups
-  }
-
-  function cardHtml(v: WallVideo): string {
-    return `
-      <div class="wall-card" data-id="${v.id}">
-        <div class="wall-card-thumb">
-          <img src="${thumbnailSrc(v)}" alt="" loading="lazy" onerror="this.style.display='none'" />
-          <div class="wall-card-overlay">
-            <button class="wall-card-play">▶</button>
-          </div>
-          <span class="wall-card-duration">${fmtDuration(v.duration)}</span>
-          ${v.qualities && v.qualities.length > 1 ? `<span class="wall-card-quality">${v.qualities[0].label}</span>` : ''}
-        </div>
-        <div class="wall-card-info">
-          <div class="wall-card-title">${escapeHtml(v.title)}</div>
-        </div>
-      </div>
-    `
-  }
-
-  function bindCards(container: HTMLElement, videos: WallVideo[]): void {
-    container.querySelectorAll('.wall-card').forEach((card) => {
-      const id = (card as HTMLElement).dataset.id!
-      const video = videos.find((v) => v.id === id)
-      if (!video) return
-
-      card.addEventListener('click', () => openPlayer(video))
-
-      // Keyboard accessibility
-      const cardEl = card as HTMLElement
-      cardEl.tabIndex = 0
-      cardEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          openPlayer(video)
-        }
-      })
-    })
-  }
-
-  function renderSections(): void {
-    const root = document.getElementById('wall-sections')
-    if (!root) return
-
-    const visible = activeFilter === 'all' ? allVideos : allVideos.filter((v) => (v.channelId || 'default') === activeFilter)
-    const countEl = document.getElementById('wall-count')
-
-    if (allVideos.length === 0) {
-      if (countEl) countEl.textContent = ''
-      root.innerHTML = `<div class="wall-empty wall-empty--page">No hay videos disponibles. Sube contenido desde el <a href="?mode=admin">panel de administración</a>.</div>`
-      return
-    }
-
-    if (countEl) countEl.textContent = `${visible.length} ${visible.length === 1 ? 'video' : 'videos'}`
-
-    if (visible.length === 0) {
-      const ch = channels.find((c) => c.id === activeFilter)
-      root.innerHTML = `<div class="wall-empty wall-empty--page">Aún no hay videos en el canal ${escapeHtml(ch?.name ?? activeFilter)}.</div>`
-      return
-    }
-
-    // Filtered view: single flat grid with all matching videos.
-    if (activeFilter !== 'all') {
-      root.innerHTML = `<div class="wall-grid">${visible.map(cardHtml).join('')}</div>`
-      bindCards(root, visible)
-      return
-    }
-
-    // "Todos": one section per channel that has videos.
-    const groups = groupByChannel(allVideos)
-    root.innerHTML = groups
-      .map(
-        (g) => `
-      <div class="wall-section">
-        <div class="wall-section-header">
-          <h3>${escapeHtml(g.channel.name)}</h3>
-          <span class="wall-count">${g.videos.length} ${g.videos.length === 1 ? 'video' : 'videos'}</span>
-        </div>
-        <div class="wall-grid">${g.videos.map(cardHtml).join('')}</div>
-      </div>
-    `
-      )
-      .join('')
-
-    for (const g of groups) {
-      const section = root.querySelector(`.wall-section:has(.wall-card[data-id="${g.videos[0].id}"])`)
-      if (section) bindCards(section as HTMLElement, g.videos)
-    }
-  }
-
-  // --- Live section (refreshed every 10s) ---
-  let allLive: WallLive[] = []
 
   async function loadLiveStreams(): Promise<void> {
     try {
       const res = await fetch(`${apiBase}/api/live`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data: unknown = await res.json()
-      allLive = Array.isArray(data) ? data : []
-      renderLiveSection(allLive.filter((s) => s.status === 'live'))
+      allLive = Array.isArray(data) ? (data as WallLive[]) : []
     } catch {
-      /* keep previous state; wall stays usable without live */
+      /* keep previous state; the wall stays usable without live */
     }
+    renderRails()
   }
 
-  /** Channel display name from /api/channels; falls back to the raw id. */
   function channelName(id?: string): string {
     if (!id) return 'IberCast'
     return channels.find((c) => c.id === id)?.name ?? id
   }
 
-  function renderLiveSection(live: WallLive[]): void {
-    const section = document.getElementById('wall-live-section')
-    if (!section) return
-    // Respect the channel filter; hide the block when nothing matches.
-    const visible = activeFilter === 'all' ? live : live.filter((s) => (s.channelId || 'default') === activeFilter)
-    if (visible.length === 0) {
-      section.style.display = 'none'
-      section.innerHTML = ''
+  /* ---------------------------------------------------------------
+     Nav + hero
+     --------------------------------------------------------------- */
+
+  function renderNavLinks(): void {
+    navLinks.innerHTML = [
+      `<a class="nav-link active" href="#inicio">Inicio</a>`,
+      ...channels.slice(0, 4).map((c) => `<a class="nav-link" href="#canal/${escapeHtml(c.id)}">${escapeHtml(c.name)}</a>`)
+    ].join('')
+  }
+
+  function renderHero(): void {
+    const featured = allVideos[0] ?? (allLive[0]
+      ? { id: allLive[0].id, title: allLive[0].title, cid: '', hlsUrl: allLive[0].hlsUrl ?? '', duration: 0 }
+      : null)
+
+    if (!featured) {
+      hero.classList.add('hero--empty')
+      heroTitle.textContent = 'Sin contenido todavía'
+      heroMeta.innerHTML = ''
+      heroDesc.textContent = 'Sube vídeos desde el panel de administración para que aparezcan aquí.'
+      heroPlay.disabled = true
+      heroPlay.style.opacity = '.5'
       return
     }
 
-    section.style.display = 'block'
-    section.innerHTML = `
-      <div class="wall-section-header">
-        <h3><span class="wall-live-dot"></span> En directo${activeFilter !== 'all' ? ` · ${escapeHtml(channelName(activeFilter))}` : ''}</h3>
-        <span class="wall-count">${visible.length} en emisión</span>
-      </div>
-      <div class="wall-grid wall-grid--live">
-        ${visible
-          .map(
-            (s) => `
-          <div class="wall-card" data-live-id="${s.id}">
-            <div class="wall-card-thumb wall-card-thumb--live">
-              <div class="wall-card-overlay">
-                <button class="wall-card-play">▶</button>
-              </div>
-              <span class="wall-card-live-badge">● LIVE</span>
-            </div>
-            <div class="wall-card-info">
-              <div class="wall-card-title">${escapeHtml(s.title)}</div>
-              <div class="wall-card-sub">${escapeHtml(channelName(s.channelId))}</div>
-            </div>
-          </div>
-        `
-          )
-          .join('')}
-      </div>
-    `
+    hero.classList.remove('hero--empty')
+    heroPlay.disabled = false
+    heroPlay.style.opacity = '1'
 
-    section.querySelectorAll('.wall-card').forEach((card) => {
-      const id = (card as HTMLElement).dataset.liveId!
-      const stream = visible.find((s) => s.id === id)
-      if (!stream || !stream.hlsUrl) return
-      const open = () =>
-        openPlayer({ id: stream.id, title: stream.title, cid: '', hlsUrl: stream.hlsUrl!, duration: 0 })
-      card.addEventListener('click', open)
-      const cardEl = card as HTMLElement
-      cardEl.tabIndex = 0
-      cardEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          open()
-        }
+    const ts = thumbnailSrc(featured)
+    if (ts) heroBg.style.backgroundImage = `url("${ts}")`
+
+    heroTitle.textContent = featured.title
+    const parts = [
+      featured.duration ? `<span>${fmtDuration(featured.duration)}</span><span class="sep">•</span>` : '',
+      `<span class="tag">P2P</span>`,
+      `<span>${channelName(featured.channelId)}</span>`
+    ]
+    heroMeta.innerHTML = parts.filter(Boolean).join('')
+    heroDesc.textContent = featured.duration
+      ? 'Reproducido directamente desde tu navegador: cada espectador reparte fragmentos vía WebRTC, sin servidores centrales ni esperas de descarga.'
+      : 'Emisión en directo reenviada por la red, sin intermediarios.'
+
+    heroPlay.onclick = () => openWatch(featured)
+    heroInfo.onclick = () => {
+      railsEl.querySelector('.rail')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+
+  /* ---------------------------------------------------------------
+     Rails
+     --------------------------------------------------------------- */
+
+  function matchesQuery(v: PlayerVideo): boolean {
+    if (!query) return true
+    const haystack = `${v.title} ${v.channelName ?? channelName(v.channelId)}`.toLowerCase()
+    return haystack.includes(query)
+  }
+
+  function progressOf(v: PlayerVideo): number {
+    if (!v.duration) return 0
+    const p = getProgress(v.id)
+    if (p < 10 || p > v.duration - 25) return 0
+    return Math.min(100, (p / v.duration) * 100)
+  }
+
+  function cardHtml(v: PlayerVideo, live = false): string {
+    const progress = progressOf(v)
+    const ts = thumbnailSrc(v)
+    return `
+      <button class="card ${live ? 'card--live' : ''}" data-id="${escapeHtml(v.id)}">
+        <div class="card-art ${live || !v.duration ? 'card-art--live' : ''}">
+          ${ts ? `<img src="${escapeHtml(ts)}" alt="" loading="lazy" onerror="this.style.display='none'" />` : ''}
+          <div class="card-shade"></div>
+          <span class="card-play">${icon(ICON_PLAY)}</span>
+          <div class="card-chips">
+            ${live || !v.duration ? '<span class="chip chip--live">● EN DIRECTO</span>' : ''}
+            ${v.qualities && v.qualities.length > 1 ? `<span class="chip chip--hd">${escapeHtml(v.qualities[v.qualities.length - 1]!.label)}</span>` : ''}
+            ${!live && v.duration ? '<span class="chip chip--p2p">P2P</span>' : ''}
+          </div>
+          ${v.duration ? `<span class="card-time">${fmtDuration(v.duration)}</span>` : ''}
+          ${progress > 0 ? `<span class="card-progress"><i style="width:${progress.toFixed(1)}%"></i></span>` : ''}
+        </div>
+        <div class="card-body">
+          <div class="card-title">${escapeHtml(v.title)}</div>
+          <div class="card-sub">
+            ${escapeHtml(v.channelName ?? channelName(v.channelId))}
+            ${progress > 0 ? `<span class="dot"></span> ${fmtDuration((progress / 100) * v.duration)} vistos` : ''}
+          </div>
+        </div>
+      </button>
+    `
+  }
+
+  function railHtml(title: string, count: number, videos: PlayerVideo[], live = false): string {
+    const cards = videos.map((v) => cardHtml(v, live)).join('')
+    return `
+      <section class="rail" data-rail>
+        <div class="rail-header">
+          <h3 class="rail-title">${live ? '<span class="live-dot"></span>' : ''}${escapeHtml(title)}</h3>
+          <span class="rail-count">${count} ${count === 1 ? 'título' : 'títulos'}</span>
+        </div>
+        <div class="rail-viewport">
+          <button class="rail-arrow rail-arrow--prev" hidden aria-label="Anterior">${icon(ICON_CHEVRON)}</button>
+          <div class="rail-track" role="list">${cards}</div>
+          <button class="rail-arrow rail-arrow--next" aria-label="Siguiente">${icon(ICON_CHEVRON)}</button>
+        </div>
+      </section>
+    `
+  }
+
+  function skeletonRail(): string {
+    const items = Array.from({ length: 6 }, () => '<div class="skeleton"></div>').join('')
+    return `
+      <section class="rail">
+        <div class="rail-header"><h3 class="rail-title">Cargando…</h3></div>
+        <div class="rail-viewport"><div class="rail-track">${items}</div></div>
+      </section>
+    `
+  }
+
+  function syncArrows(
+    track: HTMLElement,
+    prev: HTMLButtonElement | null,
+    next: HTMLButtonElement | null
+  ): void {
+    if (prev) prev.hidden = track.scrollLeft < 8
+    if (next) next.hidden = track.scrollLeft + track.clientWidth >= track.scrollWidth - 8
+  }
+
+  // bindRails runs again on every live-streams poll, so resize listeners are
+  // collected here and refreshed once per render instead of stacking up.
+  const arrowTargets: Array<[HTMLElement, HTMLButtonElement, HTMLButtonElement]> = []
+  const onWindowResize = (): void => {
+    for (const [track, prev, next] of arrowTargets) syncArrows(track, prev, next)
+  }
+  window.addEventListener('resize', onWindowResize)
+
+  function bindRails(): void {
+    arrowTargets.length = 0
+    railsEl.querySelectorAll<HTMLElement>('.rail').forEach((rail) => {
+      const track = rail.querySelector('.rail-track') as HTMLElement
+      if (!track) return
+      const prev = rail.querySelector<HTMLButtonElement>('.rail-arrow--prev')
+      const next = rail.querySelector<HTMLButtonElement>('.rail-arrow--next')
+      // The search-results rail is a flat grid with no arrows, so both may be
+      // absent — arrow wiring is skipped in that case, but cards still bind.
+      track.addEventListener('scroll', () => syncArrows(track, prev, next), { passive: true })
+
+      if (prev && next) {
+        const step = (): number => Math.max(track.clientWidth * 0.85, 240)
+        prev.addEventListener('click', () => track.scrollBy({ left: -step(), behavior: 'smooth' }))
+        next.addEventListener('click', () => track.scrollBy({ left: step(), behavior: 'smooth' }))
+        arrowTargets.push([track, prev, next])
+        syncArrows(track, prev, next)
+      }
+
+      track.querySelectorAll<HTMLElement>('.card').forEach((card) => {
+        const id = card.dataset.id!
+        const video =
+          allVideos.find((v) => v.id === id) ??
+          allLive
+            .filter((s) => s.hlsUrl)
+            .map<WallVideo>((s) => ({
+              id: s.id, title: s.title, cid: '', hlsUrl: s.hlsUrl!, duration: 0, channelId: s.channelId
+            }))
+            .find((v) => v.id === id)
+        if (!video) return
+        if (!video.channelName) video.channelName = channelName(video.channelId)
+        card.addEventListener('click', () => openWatch(video))
       })
     })
   }
 
+  function renderRails(): void {
+    if (allVideos.length === 0 && allLive.length === 0) {
+      if (!query) {
+        railsEl.innerHTML = skeletonRail()
+        return
+      }
+    }
+
+    const liveNow = allLive.filter((s) => s.status === 'live' && s.hlsUrl)
+    const sections: string[] = []
+
+    // Search keeps the live card and the channels that hold videos visible, so
+    // a query matching no title (e.g. "webrtc") is never a dead end.
+    if (query) {
+      const matches = [
+        ...allVideos.filter(matchesQuery),
+        ...liveNow.filter((s) => s.title.toLowerCase().includes(query)).map<PlayerVideo>((s) => ({
+          id: s.id, title: s.title, cid: '', hlsUrl: s.hlsUrl!, duration: 0, channelId: s.channelId
+        }))
+      ]
+
+      const parts: string[] = []
+
+      if (matches.length > 0) {
+        const cards = matches.map((v) => cardHtml(v, !v.duration)).join('')
+        parts.push(`
+        <section class="rail">
+          <div class="rail-header">
+            <h3 class="rail-title">Resultados</h3>
+            <span class="rail-count">${matches.length} ${matches.length === 1 ? 'título' : 'títulos'}</span>
+          </div>
+          <div class="rail-viewport">
+            <button class="rail-arrow rail-arrow--prev" hidden aria-label="Anterior">${icon(ICON_CHEVRON)}</button>
+            <div class="rail-track" role="list">${cards}</div>
+            <button class="rail-arrow rail-arrow--next" aria-label="Siguiente">${icon(ICON_CHEVRON)}</button>
+          </div>
+        </section>`)
+      }
+
+      // The live stream stays listed even when its title misses the query.
+      const liveCards = liveNow.map<PlayerVideo>((s) => ({
+        id: s.id, title: s.title, cid: '', hlsUrl: s.hlsUrl!, duration: 0,
+        channelId: s.channelId, channelName: channelName(s.channelId)
+      }))
+      if (liveCards.length > 0) {
+        parts.push(railHtml('En directo', liveCards.length, liveCards, true))
+      }
+
+      // Channels that actually have videos, same grouping as the default view.
+      for (const channel of channels) {
+        const list = allVideos.filter((v) => (v.channelId || 'default') === channel.id)
+        if (list.length === 0) continue
+        parts.push(railHtml(channel.name, list.length, list))
+      }
+
+      const known = new Set(channels.map((c) => c.id))
+      const orphans = allVideos.filter((v) => !known.has(v.channelId || 'default'))
+      if (orphans.length > 0) parts.push(railHtml('Otros títulos', orphans.length, orphans))
+
+      if (parts.length === 0) {
+        railsEl.innerHTML = `<div class="empty"><h3>Sin resultados</h3><p>Nada coincide con “${escapeHtml(searchInput.value)}”.</p></div>`
+        return
+      }
+      railsEl.innerHTML = parts.join('')
+      bindRails()
+      return
+    }
+
+    // Continue watching: anything partially seen.
+    const continueWatching = allVideos.filter((v) => progressOf(v) > 0).slice(0, 12)
+    if (continueWatching.length > 0) {
+      sections.push(railHtml('Continuar viendo', continueWatching.length, continueWatching))
+    }
+    if (liveNow.length > 0) {
+      const items = liveNow.map<PlayerVideo>((s) => ({
+        id: s.id, title: s.title, cid: '', hlsUrl: s.hlsUrl!, duration: 0,
+        channelId: s.channelId, channelName: channelName(s.channelId)
+      }))
+      sections.push(railHtml('En directo', items.length, items, true))
+    }
+
+    for (const channel of channels) {
+      const list = allVideos.filter((v) => (v.channelId || 'default') === channel.id)
+      if (list.length === 0) continue
+      sections.push(railHtml(channel.name, list.length, list))
+    }
+
+    // Videos whose channel isn't in the API response still need a home.
+    const known = new Set(channels.map((c) => c.id))
+    const orphans = allVideos.filter((v) => !known.has(v.channelId || 'default'))
+    if (orphans.length > 0) sections.push(railHtml('Otros títulos', orphans.length, orphans))
+
+    railsEl.innerHTML = sections.length > 0
+      ? sections.join('')
+      : `<div class="empty">
+          <h3>Aún no hay nada que ver</h3>
+          <p>Sube vídeos o crea un directo desde el <a href="?mode=admin${apiParam}">panel de administración</a>.</p>
+        </div>`
+    bindRails()
+  }
+
+  /* ---------------------------------------------------------------
+     Boot
+     --------------------------------------------------------------- */
+
+  renderRails() // skeletons
   loadChannels()
-  loadVideos()
-  loadLiveStreams()
-  setInterval(loadLiveStreams, 10000)
+  void loadVideos()
+  void loadLiveStreams()
+  setInterval(() => { void loadLiveStreams() }, 10_000)
 }

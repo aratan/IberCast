@@ -44,7 +44,7 @@ export function AdminDashboard(rootEl: HTMLElement, apiBase: string, token: stri
   topbar.innerHTML = `
     <div class="admin-topbar-brand">Iber<span>Cast</span> Admin</div>
     <div class="admin-topbar-actions">
-      <a href="?mode=wall" class="admin-topbar-link">Ver muro público</a>
+      <a href="?mode=wall${apiBase && apiBase !== location.origin ? `&api=${encodeURIComponent(apiBase)}` : ''}" class="admin-topbar-link">Ver muro público</a>
       <button class="admin-topbar-logout" id="admin-logout">Cerrar sesión</button>
     </div>
   `
