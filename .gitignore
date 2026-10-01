@@ -33,6 +33,7 @@ auto.key
 
 # --- Scripts de repro temporal (playwright) ---
 player/scripts-repro.mjs
+player/tmp-*.mjs
 
 # --- IDE / OS ---
 .DS_Store

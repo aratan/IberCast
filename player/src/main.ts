@@ -1,4 +1,5 @@
 import Hls, { Events, ErrorTypes } from 'hls.js'
+import './styles.css'
 import { createIberNode, type IberNode } from './node'
 import {
   createIberLoader,
