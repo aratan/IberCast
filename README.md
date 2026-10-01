@@ -83,22 +83,57 @@ de banda ancha del origin a cambios de eficiencia de red.
 - [x] CI básica (GitHub Actions: typecheck + build player; daemon en guard).
 
 ### Fase 1 — Pipeline VOD
-- [ ] CLI/API `ibercastd`: subir vídeo → HLS con FFmpeg (3 calidades).
-- [ ] Empaquetado de la salida HLS a CAR y publicación en IPFS (Kubo RPC).
-- [ ] Endpoint que devuelve el CID raíz del manifiesto.
+- [x] CLI/API `ibercastd`: subir vídeo → HLS con FFmpeg (3 calidades).
+- [x] Empaquetado de la salida HLS a CAR y publicación en IPFS (Kubo RPC).
+- [x] Endpoint que devuelve el CID raíz del manifiesto.
+- [x] Miniatura (`thumb.jpg`) generada al publicar y pineada con el manifiesto.
 
 ### Fase 2 — Reproductor P2P *(scaffold listo, build verificado)*
 - [x] `player` en TS con Helia (navegador) + bitswap.
 - [x] Loader custom de hls.js: resolver segmentos por path UnixFS.
 - [x] Fallback transparente a gateway HTTP si P2P no responde a tiempo.
 - [x] Métricas: segmentos/bytes servidos por P2P vs gateway vs caché.
-- [ ] Verificación E2E con un vídeo publicado por `ibercastd` (bloqueada por Fase 1).
+- [x] Verificación E2E con un vídeo publicado por `ibercastd` (publicar → gateway → hls.js).
 
 ### Fase 3 — Producción
 - [x] Seed nodes con proved plumbing (systemd/docker).
 - [x] Pinning remoto (Pinata/web3.storage o Kubo cluster propio).
 - [x] Live streaming con HLS corto (ventanas de 4–6 s) + modo evento.
 - [x] Autenticación de operador y multi-tenant.
+
+## ⚠️ Gateway de IPFS: debe estar en el puerto 8080
+
+Todo el código asume que el gateway HTTP de Kubo escucha en **8080**
+(`player/src/gateway.ts`, `internal/config/config.go`, `run.sh`, `deploy/`).
+Si lo mueves a otro puerto, **los vídeos no se ven**: el player pide los
+manifiestos y segmentos a `http://{cid}.ipfs.localhost:8080` y recibe
+`ERR_CONNECTION_REFUSED`.
+
+```bash
+# Comprobar
+ipfs config Addresses.Gateway   # debe ser /ip4/127.0.0.1/tcp/8080
+
+# Restaurar si está movido (cambia la config global de IPFS, fuera del repo)
+ipfs config Addresses.Gateway /ip4/127.0.0.1/tcp/8080
+ipfs shutdown && ipfs daemon    # el gateway solo cambia al reiniciar
+```
+
+Este ajuste **no está en git** (vive en `~/.ipfs/config`), así que no se
+comparte entre máquinas: hay que verificarlo también en el VPS.
+
+Diagnóstico rápido si no reproducen:
+
+```bash
+ipfs config Addresses.Gateway
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/ipfs/<CID>/master.m3u8
+```
+
+### Vídeos antiguos con rutas de segmento rotas
+
+Los vídeos publicados **antes** del arreglo de `ingest.go` tienen playlists
+variantes con el prefijo duplicado (`/v0/index.m3u8` →
+`v0/seg-000.ts` → HLS pide `/v0/v0/seg-000.ts` → 404). El código actual ya lo
+genera bien; **hay que volver a subir esos vídeos**.
 
 ## Documentación
 
@@ -121,7 +156,7 @@ IberCast/
 ## Cómo probar
 
 ```bash
-# 1. Arranca Kubo local
+# 1. Arranca Kubo local (gateway en 8080 — ver aviso arriba)
 ipfs daemon
 
 # 2. Publica un vídeo
