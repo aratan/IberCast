@@ -3,10 +3,13 @@
 package publish
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/victorarbiol/ibercastd/internal/ingest"
 	"github.com/victorarbiol/ibercastd/internal/ipfsapi"
@@ -54,6 +57,10 @@ func Run(ffmpegPath, inputPath, dataDir, ipfsEndpoint string, liveCfg *ingest.Li
 	// Get the HLS output directory (parent of manifest)
 	hlsDir := filepath.Dir(manifestPath)
 
+	// Step 1b: poster frame for the wall. Best-effort: a missing thumb.jpg
+	// only costs the card artwork, so a failure here must not fail the upload.
+	generateThumb(ffmpegPath, inputPath, hlsDir)
+
 	// Step 2: IPFS add + pin
 	client := &ipfsapi.Client{Endpoint: ipfsEndpoint}
 	cid, err := client.Add(hlsDir)
@@ -97,6 +104,30 @@ func Run(ffmpegPath, inputPath, dataDir, ipfsEndpoint string, liveCfg *ingest.Li
 		Duration:  duration,
 		Qualities: qualityInfo,
 	}, nil
+}
+
+// generateThumb writes a poster JPEG at <hlsDir>/thumb.jpg so the wall cards
+// have artwork. It seeks ~1s in (past black frames) and silently gives up on
+// any error: the player hides the image if it is missing.
+func generateThumb(ffmpegPath, inputPath, hlsDir string) {
+	thumbPath := filepath.Join(hlsDir, "thumb.jpg")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, ffmpegPath,
+		"-y", "-ss", "1", "-i", inputPath,
+		"-frames:v", "1",
+		// -update 1 is required so ffmpeg writes a single file instead of
+		// expecting an image sequence pattern in the output name.
+		"-update", "1",
+		"-vf", "scale=640:-2",
+		"-q:v", "4",
+		thumbPath,
+	)
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: thumbnail generation failed: %v\n", err)
+		_ = os.Remove(thumbPath) // avoid publishing a truncated/partial file
+	}
 }
 
 // estimateDuration reads the v0 playlist and sums its EXTINF durations.

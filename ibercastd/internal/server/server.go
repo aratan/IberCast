@@ -394,6 +394,9 @@ func uploadVideo(deps *ServerDeps) http.HandlerFunc {
 			Duration:  result.Duration,
 			ChannelID: channelID,
 			Qualities: qInfos,
+			// Served from the same IPFS root as the manifest, so the wall can
+			// load artwork over the gateway with no extra endpoint.
+			ThumbnailURL: fmt.Sprintf("/ipfs/%s/thumb.jpg", result.CID),
 		}
 
 		if err := deps.Store.SaveVideo(video); err != nil {
