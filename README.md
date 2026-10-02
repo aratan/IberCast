@@ -75,6 +75,18 @@ de banda ancha del origin a cambios de eficiencia de red.
   primero a la swarm P2P (Helia + WebRTC) y hace fallback a gateway HTTP.
   Vista `wall` para el grid de canales en vivo.
 
+## Requisitos previos
+
+Para ejecutar IberCast localmente necesitas tener instaladas estas aplicaciones externas:
+
+| Aplicación | Uso | Notas |
+|---|---|---|
+| [OBS Studio](https://obsproject.com/es) | Emisión en directo (live streaming). Envía RTMP a `rtmp://localhost:1935/live/<streamKey>`. | Solo necesario para probar **directos**. No se requiere para VOD. |
+| [IPFS (Kubo)](https://docs.ipfs.tech/install/) | Almacenamiento y distribución P2P de vídeos (manifiestos, segmentos y CARs). | Ejecutar con `ipfs daemon`. **El gateway HTTP debe escuchar en `http://127.0.0.1:8080`** (ver aviso de gateway más abajo). |
+| [FFmpeg](https://ffmpeg.org/download.html) | Transcodificación a HLS (usado por `ibercastd`). | Necesario para subir vídeos y para la ingestión en directo. |
+| [Go](https://go.dev/dl/) (>= 1.22) | Compila y ejecuta `ibercastd`. | Requerido por `run.sh`. |
+| [Node.js](https://nodejs.org/es) + npm | Sirve el player con Vite (`npm run dev`). | Requerido por `run.sh`. |
+
 ## Roadmap
 
 ### Fase 0 — Fundaciones

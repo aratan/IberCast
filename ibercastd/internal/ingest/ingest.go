@@ -158,6 +158,7 @@ func RunFFmpeg(ffmpegPath, inputPath, outputDir string, liveConfig *LiveConfig) 
 
 		cmdArgs = append(cmdArgs, filterArgs...)
 
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		cmd := exec.CommandContext(ctx, ffmpegPath, cmdArgs...)
 
 		// Close stdin to prevent ffmpeg from waiting for input

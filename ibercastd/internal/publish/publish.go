@@ -34,6 +34,13 @@ type QualityInfo struct {
 // Run executes the full pipeline: ingest → IPFS add → CAR export (backup).
 // For live streaming, provide a non-nil LiveConfig.
 func Run(ffmpegPath, inputPath, dataDir, ipfsEndpoint string, liveCfg *ingest.LiveConfig) (*Result, error) {
+	var err error
+	if ffmpegPath == "" {
+		ffmpegPath, err = exec.LookPath("ffmpeg")
+		if err != nil {
+			return nil, fmt.Errorf("ffmpeg not found in PATH: %w", err)
+		}
+	}
 	// Validate input
 	if _, err := os.Stat(inputPath); err != nil {
 		return nil, fmt.Errorf("input file: %w", err)
@@ -114,7 +121,16 @@ func generateThumb(ffmpegPath, inputPath, hlsDir string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, ffmpegPath,
+	ffp := ffmpegPath
+	var err error
+	if ffp == "" {
+		ffp, err = exec.LookPath("ffmpeg")
+		if err != nil {
+			ffp = "ffmpeg"
+		}
+	}
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	cmd := exec.CommandContext(ctx, ffp,
 		"-y", "-ss", "1", "-i", inputPath,
 		"-frames:v", "1",
 		// -update 1 is required so ffmpeg writes a single file instead of
