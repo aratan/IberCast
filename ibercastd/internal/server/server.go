@@ -975,8 +975,9 @@ func loginHandler(deps *ServerDeps) http.HandlerFunc {
 			ExpiresAt: exp, LastSeen: time.Now(), CreatedAt: time.Now(),
 		}
 		_ = deps.Store.CreateSession(sess)
+		// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
 		http.SetCookie(w, &http.Cookie{
-			Name: sessionCookie, Value: sid, Path: "/", HttpOnly: true,
+			Name: sessionCookie, Value: sid, Path: "/", HttpOnly: true, Secure: true,
 			Expires: exp, SameSite: http.SameSiteLaxMode,
 		})
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -990,7 +991,8 @@ func logoutHandler(deps *ServerDeps) http.HandlerFunc {
 		c, err := r.Cookie(sessionCookie)
 		if err == nil {
 			deps.Store.DeleteSession(c.Value)
-			http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+			// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true})
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
