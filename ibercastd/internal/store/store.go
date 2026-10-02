@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"strings"
 	"time"
 
 )
@@ -624,4 +625,29 @@ func (s *Store) DeleteParrilla(id string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+
+
+func (s *Store) ListUsersSanitized() []User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]User, len(s.users))
+	for i, u := range s.users {
+		out[i] = u
+		out[i].PasswordHash = ""
+	}
+	return out
+}
+
+func (s *Store) GetUserByName(username string) (User, bool) {
+	un := strings.ToLower(strings.TrimSpace(username))
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, u := range s.users {
+		if strings.EqualFold(u.Username, un) {
+			return u, true
+		}
+	}
+	return User{}, false
 }
