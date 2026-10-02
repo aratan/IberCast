@@ -83,6 +83,10 @@ export function AdminDashboard(rootEl: HTMLElement, apiBase: string, token: stri
   catalogueContainer.className = 'admin-panel active'
   catalogueContainer.id = 'panel-catalogue'
 
+  const usersContainer = document.createElement('div')
+  usersContainer.className = 'admin-panel'
+  usersContainer.id = 'panel-users'
+
   const scheduleContainer = document.createElement('div')
   scheduleContainer.className = 'admin-panel'
   scheduleContainer.id = 'panel-schedule'
@@ -92,6 +96,7 @@ export function AdminDashboard(rootEl: HTMLElement, apiBase: string, token: stri
   liveContainer.id = 'panel-live'
 
   tabContent.appendChild(catalogueContainer)
+  tabContent.appendChild(usersContainer)
   tabContent.appendChild(scheduleContainer)
   tabContent.appendChild(liveContainer)
   rootEl.appendChild(tabContent)
@@ -207,8 +212,15 @@ export function AdminDashboard(rootEl: HTMLElement, apiBase: string, token: stri
     if (name === 'schedule') scheduleRefresh?.()
   })
 
+  if (sess?.user?.role === "admin") {
+    renderUsersPanel(usersContainer, apiBase)
+  }
   loadChannels()
   loadStats()
+}
+
+function renderUsersPanel(container: HTMLElement, _apiBase: string): void {
+  container.innerHTML = `<div class="admin-users-header"><h4>Usuarios</h4></div><div id="users-list">Cargando...</div>`
 }
 
 function renderLivePanel(container: HTMLElement, apiBase: string, token: string): void {

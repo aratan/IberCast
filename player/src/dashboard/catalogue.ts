@@ -9,6 +9,8 @@ export interface CatalogueVideo {
   duration: number
   channelId?: string
   thumbnailUrl?: string
+  ownerUsername?: string
+  ownerID?: string
 }
 
 export interface CatalogueChannel {
