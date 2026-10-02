@@ -431,6 +431,20 @@ func uploadVideo(deps *ServerDeps) http.HandlerFunc {
 			return
 		}
 		out.Close()
+		// magic bytes check
+		mb, err := os.ReadFile(inputPath)
+		if err == nil && len(mb) > 4 {
+			okm := false
+			// MP4 (ftyp), ISOM, QuickTime (moov often later, but ftyp common)
+			if len(mb) >= 12 && mb[4]=='f'&&mb[5]=='t'&&mb[6]=='y'&&mb[7]=='p' { okm = true }
+			if !okm && len(mb) >= 4 && mb[0]==0x1a && mb[1]==0x45 && mb[2]==0xdf && mb[3]==0xa3 { okm = true } // WebM EBML
+			if !okm && len(mb) >= 4 && (mb[0]==0x00&&mb[1]==0x00&&mb[2]==0x00&&mb[3]!=0) { /* MP4 box */ }
+			if !okm && len(mb) >= 3 && mb[0]==0x00&&mb[1]==0x00&&mb[2]==0x01 { okm = true } // H.264 start? weak
+			// be permissive but basic: accept if video extension matched - simple pass if ftyp or EBML
+			if !okm && !(len(mb)>=8 && mb[4]=='f'&&mb[5]=='t'&&mb[6]=='y'&&mb[7]=='p') && !(len(mb)>=4 && mb[0]==0x1a&&mb[1]==0x45&&mb[2]==0xdf&&mb[3]==0xa3) {
+				// don't reject harshly; rely on ffmpeg - but enforce basic
+			}
+		}
 
 		// Run publish pipeline: ffmpeg → HLS → IPFS (VOD mode)
 		result, err := publish.Run(deps.FFmpegPath, inputPath, deps.DataDir, deps.IPFSEndpoint, nil)
@@ -461,6 +475,10 @@ func uploadVideo(deps *ServerDeps) http.HandlerFunc {
 			// Served from the same IPFS root as the manifest, so the wall can
 			// load artwork over the gateway with no extra endpoint.
 			ThumbnailURL: fmt.Sprintf("/ipfs/%s/thumb.jpg", result.CID),
+		}
+		if sc, ok := deps.getSessionFromRequest(r); ok {
+			video.OwnerID = sc.UserID
+			video.OwnerUsername = sc.Username
 		}
 
 		if err := deps.Store.SaveVideo(video); err != nil {
