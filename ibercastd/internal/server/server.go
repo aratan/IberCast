@@ -455,16 +455,25 @@ func uploadVideo(deps *ServerDeps) http.HandlerFunc {
 		out.Close()
 		// magic bytes check
 		mb, err := os.ReadFile(inputPath)
-		if err == nil && len(mb) > 4 {
+		if err == nil && len(mb) >= 12 {
 			okm := false
-			// MP4 (ftyp), ISOM, QuickTime (moov often later, but ftyp common)
-			if len(mb) >= 12 && mb[4]=='f'&&mb[5]=='t'&&mb[6]=='y'&&mb[7]=='p' { okm = true }
-			if !okm && len(mb) >= 4 && mb[0]==0x1a && mb[1]==0x45 && mb[2]==0xdf && mb[3]==0xa3 { okm = true } // WebM EBML
-			if !okm && len(mb) >= 4 && (mb[0]==0x00&&mb[1]==0x00&&mb[2]==0x00&&mb[3]!=0) { /* MP4 box */ }
-			if !okm && len(mb) >= 3 && mb[0]==0x00&&mb[1]==0x00&&mb[2]==0x01 { okm = true } // H.264 start? weak
-			// be permissive but basic: accept if video extension matched - simple pass if ftyp or EBML
-			if !okm && !(len(mb)>=8 && mb[4]=='f'&&mb[5]=='t'&&mb[6]=='y'&&mb[7]=='p') && !(len(mb)>=4 && mb[0]==0x1a&&mb[1]==0x45&&mb[2]==0xdf&&mb[3]==0xa3) {
-				// don't reject harshly; rely on ffmpeg - but enforce basic
+			// MP4: ftyp at offset 4
+			if len(mb) >= 12 && mb[4]=='f' && mb[5]=='t' && mb[6]=='y' && mb[7]=='p' {
+				// check common brands: isom, avc1, mp41, iso2, qt, m4v
+				brand := string(mb[8:12])
+				if brand=="isom"||brand=="avc1"||brand=="mp41"||brand=="iso2"||brand=="mp42"||brand=="isom"||brand=="M4V "||brand=="qt  "||string(mb[8:11])=="qt" {
+					okm = true
+				}
+				// also accept any valid ftyp? be strict but allow common
+				if !okm { okm = true } // fallback permissive if ftyp present
+			}
+			// WebM EBML
+			if !okm && len(mb) >= 4 && mb[0]==0x1a && mb[1]==0x45 && mb[2]==0xdf && mb[3]==0xa3 {
+				okm = true
+			}
+			if !okm {
+				writeError(w, http.StatusBadRequest, "unsupported media type")
+				return
 			}
 		}
 
