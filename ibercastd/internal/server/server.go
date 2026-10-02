@@ -1073,11 +1073,75 @@ func usersCreateHandler(deps *ServerDeps) http.HandlerFunc {
 }
 func usersUpdateHandler(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+		sc, ok := deps.getSessionFromRequest(r)
+		if !ok || sc.Role != "admin" {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		id := mux.Vars(r)["id"]
+		var body struct {
+			Username            string `json:"username"`
+			Role                string `json:"role"`
+			Active              bool   `json:"active"`
+			Password            string `json:"password"`
+			ForcePasswordChange bool   `json:"forcePasswordChange"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		u, ok := deps.Store.GetUser(id)
+		if !ok {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		if body.Role != "admin" && body.Role != "uploader" {
+			body.Role = "uploader"
+		}
+		// protect last active admin when demoting/disabling
+		if u.Role == "admin" && (body.Role != "admin" || !body.Active) {
+			if deps.Store.CountAdminsActive() <= 1 {
+				writeError(w, http.StatusConflict, "cannot demote or disable the last active admin")
+				return
+			}
+		}
+		u.Username = body.Username
+		u.Role = body.Role
+		u.Active = body.Active
+		u.ForcePasswordChange = body.ForcePasswordChange
+		if body.Password != "" {
+			h, err := auth.HashPassword(body.Password)
+			if err == nil {
+				u.PasswordHash = h
+			}
+		}
+		if err := deps.Store.UpdateUser(u); err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed")
+			return
+		}
+		u.PasswordHash = ""
+		writeJSON(w, http.StatusOK, u)
 	}
 }
 func usersDeleteHandler(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+		sc, ok := deps.getSessionFromRequest(r)
+		if !ok || sc.Role != "admin" {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		id := mux.Vars(r)["id"]
+		u, ok := deps.Store.GetUser(id)
+		if !ok {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		if u.Role == "admin" && deps.Store.CountAdminsActive() <= 1 {
+			writeError(w, http.StatusConflict, "cannot delete the last active admin")
+			return
+		}
+		deps.Store.DeleteUser(id)
+		deps.Store.DeleteUserSessions(id)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }

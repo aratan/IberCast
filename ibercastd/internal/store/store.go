@@ -733,3 +733,69 @@ func (s *Store) AddUser(u User) error {
 	s.users = append(s.users, u)
 	return s.writeJSON("users.json", s.users)
 }
+
+func (s *Store) CountAdminsActive() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, u := range s.users {
+		if u.Role == "admin" && u.Active {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *Store) UpdateUser(u User) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, ex := range s.users {
+		if ex.ID == u.ID {
+			u.UpdatedAt = time.Now()
+			s.users[i] = u
+			return s.writeJSON("users.json", s.users)
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
+func (s *Store) DeleteUser(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, ex := range s.users {
+		if ex.ID == id {
+			s.users = append(s.users[:i], s.users[i+1:]...)
+			_ = s.writeJSON("users.json", s.users)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) DeleteUserSessions(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, ss := range s.sessions {
+		if ss.UserID == userID {
+			continue
+		}
+		s.sessions[n] = ss
+		n++
+	}
+	if n != len(s.sessions) {
+		s.sessions = s.sessions[:n]
+		_ = s.writeJSON("sessions.json", s.sessions)
+	}
+}
+
+func (s *Store) GetUser(id string) (User, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, u := range s.users {
+		if u.ID == id {
+			return u, true
+		}
+	}
+	return User{}, false
+}
