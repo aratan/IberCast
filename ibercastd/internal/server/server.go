@@ -22,6 +22,7 @@ import (
 	"github.com/victorarbiol/ibercastd/internal/publish"
 	"github.com/victorarbiol/ibercastd/internal/store"
 	"github.com/victorarbiol/ibercastd/internal/auth"
+	"golang.org/x/time/rate"
 )
 
 // Config needed by the server to coordinate upload → ingest → IPFS.
@@ -45,6 +46,12 @@ type ServerDeps struct {
 const defaultMaxFileSize = 524288000
 
 // NewRouter builds the mux.Router with all routes.
+
+var (
+	loginLimiter = rate.NewLimiter(rate.Every(time.Second), 10)
+	apiLimiter   = rate.NewLimiter(rate.Every(time.Second), 50)
+)
+
 func NewRouter(deps *ServerDeps) *mux.Router {
 	r := mux.NewRouter()
 
