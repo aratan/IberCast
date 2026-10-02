@@ -3,7 +3,7 @@
  */
 import { CatalogueView } from '../dashboard/catalogue'
 import { ScheduleView } from '../dashboard/schedule'
-import { clearSession } from './login'
+import { clearSession, getSession } from './login'
 import { openPlayer } from '../player-modal'
 
 interface VideoSummary {
@@ -41,9 +41,11 @@ export function AdminDashboard(rootEl: HTMLElement, apiBase: string, token: stri
   // Top bar
   const topbar = document.createElement('div')
   topbar.className = 'admin-topbar'
+  const sess = getSession()
   topbar.innerHTML = `
     <div class="admin-topbar-brand">Iber<span>Cast</span> Admin</div>
     <div class="admin-topbar-actions">
+      <span class="admin-topbar-user">${sess ? sess.user.username + ' (' + sess.user.role + ')' : ''}</span>
       <a href="?mode=wall${apiBase && apiBase !== location.origin ? `&api=${encodeURIComponent(apiBase)}` : ''}" class="admin-topbar-link">Ver muro público</a>
       <button class="admin-topbar-logout" id="admin-logout">Cerrar sesión</button>
     </div>
@@ -64,11 +66,13 @@ export function AdminDashboard(rootEl: HTMLElement, apiBase: string, token: stri
   // Tabs
   const tabs = document.createElement('div')
   tabs.className = 'admin-tabs'
-  tabs.innerHTML = `
-    <button class="admin-tab active" data-tab="catalogue">Catálogo</button>
-    <button class="admin-tab" data-tab="schedule">Parrilla</button>
-    <button class="admin-tab" data-tab="live">En vivo</button>
-  `
+  const isAdmin = sess?.user?.role === 'admin'
+  let tabsHtml = `<button class="admin-tab active" data-tab="catalogue">Catálogo</button>`
+  if (isAdmin) {
+    tabsHtml += `<button class="admin-tab" data-tab="users">Usuarios</button>`
+  }
+  tabsHtml += `<button class="admin-tab" data-tab="schedule">Parrilla</button><button class="admin-tab" data-tab="live">En vivo</button>`
+  tabs.innerHTML = tabsHtml
   rootEl.appendChild(tabs)
 
   // Tab content containers
