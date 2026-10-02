@@ -415,11 +415,8 @@ func deleteVideo(deps *ServerDeps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid id")
 			return
 		}
-		ok, err := deps.Store.DeleteVideo(id)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "delete failed")
-			return
-		}
+		ok := deps.Store.DeleteVideo(id)
+		
 		if ok {
 			w.WriteHeader(http.StatusNoContent)
 		} else {
@@ -441,7 +438,7 @@ func getParrilla(deps *ServerDeps) http.HandlerFunc {
 		if dayStr != "" {
 			fmt.Sscanf(dayStr, "%d", &day)
 		}
-		slots := deps.Store.ResolveParrilla(channelID, day)
+		slots := deps.Store.ResolveParrillaFiltered(channelID, day)
 		writeJSON(w, http.StatusOK, slots)
 	}
 }
@@ -456,11 +453,11 @@ func createParrilla(deps *ServerDeps) http.HandlerFunc {
 		if slot.ID == "" {
 			slot.ID = generateID()
 		}
-		if deps.Store.HasOverlap(slot.ChannelID, slot.DayOfWeek, slot.TimeStart, "") {
+		if deps.Store.HasOverlap2(slot.ChannelID, slot.DayOfWeek, slot.TimeStart, "") {
 			writeError(w, http.StatusConflict, "time slot conflict: overlapping entry exists")
 			return
 		}
-		if err := deps.Store.SaveParrilla(slot); err != nil {
+		if err := deps.Store.SaveParrillaSlot(slot); err != nil {
 			writeError(w, http.StatusInternalServerError, "save failed")
 			return
 		}
@@ -481,7 +478,7 @@ func updateParrilla(deps *ServerDeps) http.HandlerFunc {
 			return
 		}
 		slot.ID = id
-		if deps.Store.HasOverlap(slot.ChannelID, slot.DayOfWeek, slot.TimeStart, id) {
+		if deps.Store.HasOverlap2(slot.ChannelID, slot.DayOfWeek, slot.TimeStart, id) {
 			writeError(w, http.StatusConflict, "time slot conflict: overlapping entry exists")
 			return
 		}
@@ -505,11 +502,7 @@ func deleteParrilla(deps *ServerDeps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid id")
 			return
 		}
-		ok, err := deps.Store.DeleteParrilla(id)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "delete failed")
-			return
-		}
+		ok, _ := deps.Store.DeleteParrilla(id)
 		if ok {
 			w.WriteHeader(http.StatusNoContent)
 		} else {

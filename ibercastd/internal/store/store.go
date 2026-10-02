@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
 )
 
 // --- Entity types ---
@@ -20,14 +21,16 @@ type Channel struct {
 }
 
 type Video struct {
-	ID          string  `json:"id"`
-	Title       string  `json:"title"`
-	CID         string  `json:"cid"`
-	HLSUrl      string  `json:"hlsUrl"`
-	Duration    float64 `json:"duration"`
-	ChannelID   string  `json:"channelId,omitempty"` // empty means "default"
-	Qualities   []QualityInfo `json:"qualities,omitempty"`
-	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
+	ID             string        `json:"id"`
+	Title          string        `json:"title"`
+	CID            string        `json:"cid"`
+	HLSUrl         string        `json:"hlsUrl"`
+	Duration       float64       `json:"duration"`
+	ChannelID      string        `json:"channelId,omitempty"` // empty means "default"
+	Qualities      []QualityInfo `json:"qualities,omitempty"`
+	ThumbnailURL   string        `json:"thumbnailUrl,omitempty"`
+	OwnerID        string        `json:"ownerId,omitempty"`
+	OwnerUsername  string        `json:"ownerUsername,omitempty"`
 }
 
 // QualityInfo describes an HLS quality level (mirrors publish.QualityInfo).
@@ -45,6 +48,16 @@ type ParrillaSlot struct {
 	TimeStart string  `json:"timeStart"` // HH:MM
 	Type      string  `json:"type"`      // "vod", "ad", "live"
 	Ref       string  `json:"ref"`       // Video or Ad ID
+}
+
+type ResolvedSlot struct {
+	ID         string      `json:"id"`
+	ChannelID  string      `json:"channelId"`
+	DayOfWeek  int         `json:"dayOfWeek"`
+	TimeStart  string      `json:"timeStart"`
+	Type       string      `json:"type"`
+	Ref        interface{} `json:"ref"` // Video object or null
+	Unresolved bool        `json:"unresolved,omitempty"`
 }
 
 // Ad is the advertisment entity. Schema only in this phase — no playback.
@@ -66,29 +79,57 @@ type Effect struct {
 
 // LiveStream represents an active live streaming session.
 type LiveStream struct {
-	ID          string    `json:"id"`
-	ChannelID   string    `json:"channelId"`
-	Title       string    `json:"title"`
-	Status      string    `json:"status"` // "live", "pending", "ended"
-	StartedAt   time.Time `json:"startedAt"`
-	StreamKey   string    `json:"streamKey,omitempty"` // RTMP path key: ic_<hex>
-	CurrentCID  string    `json:"currentCid,omitempty"`
-	HLSUrl      string    `json:"hlsUrl,omitempty"`
-	Duration    float64   `json:"duration"`
-	Qualities   []QualityInfo `json:"qualities,omitempty"`
+	ID          string         `json:"id"`
+	ChannelID   string         `json:"channelId"`
+	Title       string         `json:"title"`
+	Status      string         `json:"status"` // "live", "pending", "ended"
+	StartedAt   time.Time      `json:"startedAt"`
+	StreamKey   string         `json:"streamKey,omitempty"` // RTMP path key: ic_<hex>
+	CurrentCID  string         `json:"currentCid,omitempty"`
+	HLSUrl      string         `json:"hlsUrl,omitempty"`
+	Duration    float64        `json:"duration"`
+	Qualities   []QualityInfo  `json:"qualities,omitempty"`
 }
 
-type ResolvedSlot struct {
-	ID         string      `json:"id"`
-	ChannelID  string      `json:"channelId"`
-	DayOfWeek  int         `json:"dayOfWeek"`
-	TimeStart  string      `json:"timeStart"`
-	Type       string      `json:"type"`
-	Ref        interface{} `json:"ref"` // Video object or null
-	Unresolved bool        `json:"unresolved,omitempty"`
+// User represents an authenticated user with role-based access control.
+type User struct {
+	ID                   string    `json:"id"`
+	Username             string    `json:"username"`
+	Role                 string    `json:"role"` // "admin" or "uploader"
+	PasswordHash         string    `json:"passwordHash"`
+	Active               bool      `json:"active"`
+	ForcePasswordChange  bool      `json:"forcePasswordChange"`
+	LastLoginAt          time.Time `json:"lastLoginAt,omitempty"`
+	CreatedAt            time.Time `json:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt"`
+	VideosOwned          int       `json:"videosOwned"`
 }
 
-// --- Store ---
+// Session represents an authenticated session with CSRF protection.
+type Session struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"userId"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	CSRF      string    `json:"csrf"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	LastSeen  time.Time `json:"lastSeen"`
+	CreatedAt time.Time `json:"createdAt"`
+	IP        string    `json:"ip,omitempty"`
+	UserAgent string    `json:"userAgent,omitempty"`
+}
+
+// AuditEvent represents an audit log entry (append-only).
+type AuditEvent struct {
+	Timestamp time.Time `json:"timestamp"`
+	Action    string    `json:"action"`
+	UserID    string    `json:"userId,omitempty"`
+	Username  string    `json:"username,omitempty"`
+	Role      string    `json:"role,omitempty"`
+	Target    string    `json:"target,omitempty"`
+	Details   string    `json:"details,omitempty"`
+	IP        string    `json:"ip,omitempty"`
+}
 
 type Store struct {
 	dir         string
@@ -99,6 +140,9 @@ type Store struct {
 	ads         []Ad
 	effects     []Effect
 	liveStreams []LiveStream
+	users       []User
+	sessions    []Session
+	auditEvents []AuditEvent
 }
 
 // New creates a Store and loads (or initialises) data from dir.
@@ -122,90 +166,230 @@ func (s *Store) writeJSON(filename string, data interface{}) error {
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return fmt.Errorf("write tmp %s: %w", filename, err)
 	}
-	return os.Rename(tmp, path)
-}
-
-func (s *Store) readJSON(filename string, out interface{}) error {
-	path := filepath.Join(s.dir, filename)
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // file doesn't yet exist; zero-value out is fine
-		}
-		return fmt.Errorf("read %s: %w", filename, err)
-	}
-	return json.Unmarshal(raw, out)
-}
-
-// --- loadOrCreate ---
-
-func (s *Store) loadOrCreate() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := s.readJSON("channels.json", &s.channels); err != nil {
-		return err
-	}
-	if err := s.readJSON("videos.json", &s.videos); err != nil {
-		return err
-	}
-	if err := s.readJSON("parrilla.json", &s.parrilla); err != nil {
-		return err
-	}
-	if err := s.readJSON("ads.json", &s.ads); err != nil {
-		return err
-	}
-	if err := s.readJSON("effects.json", &s.effects); err != nil {
-		return err
-	}
-	if err := s.readJSON("live.json", &s.liveStreams); err != nil {
-		return err
-	}
-
-	// Default channels if none exist
-	if len(s.channels) == 0 {
-		s.channels = []Channel{
-			{ID: "default", Name: "IberCast", Description: "Default channel"},
-			{ID: "peliculas", Name: "Películas", Description: "Canal de películas"},
-			{ID: "noticias", Name: "Noticias", Description: "Canal de noticias"},
-		}
-		if err := s.writeJSON("channels.json", s.channels); err != nil {
-			return fmt.Errorf("init default channels: %w", err)
-		}
-	}
-	// Keep ads/effects collections materialised so they survive restart
-	// even when the station has never mutated them.
-	if s.ads == nil {
-		s.ads = []Ad{}
-		if err := s.writeJSON("ads.json", s.ads); err != nil {
-			return fmt.Errorf("init ads: %w", err)
-		}
-	}
-	if s.effects == nil {
-		s.effects = []Effect{}
-		if err := s.writeJSON("effects.json", s.effects); err != nil {
-			return fmt.Errorf("init effects: %w", err)
-		}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename %s: %w", filename, err)
 	}
 	return nil
 }
 
-// --- Channels CRUD ---
+func (s *Store) loadOrCreate() error {
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return err
+	}
+	if err := s.loadChannels(); err != nil {
+		return err
+	}
+	if err := s.loadVideos(); err != nil {
+		return err
+	}
+	if err := s.loadParrilla(); err != nil {
+		return err
+	}
+	if err := s.loadAds(); err != nil {
+		return err
+	}
+	if err := s.loadEffects(); err != nil {
+		return err
+	}
+	if err := s.loadLive(); err != nil {
+		return err
+	}
+	if err := s.loadUsers(); err != nil {
+		return err
+	}
+	if err := s.loadSessions(); err != nil {
+		return err
+	}
+	return nil
+}
 
-// AddChannel appends a channel, rejecting duplicate IDs.
-func (s *Store) AddChannel(c Channel) error {
+func (s *Store) loadChannels() error {
+	path := filepath.Join(s.dir, "channels.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		s.channels = []Channel{}
+		return s.writeJSON("channels.json", s.channels)
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, &s.channels)
+}
+
+func (s *Store) loadVideos() error {
+	path := filepath.Join(s.dir, "videos.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		s.videos = []Video{}
+		return s.writeJSON("videos.json", s.videos)
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, &s.videos)
+}
+
+func (s *Store) loadParrilla() error {
+	path := filepath.Join(s.dir, "parrilla.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		s.parrilla = []ParrillaSlot{}
+		return s.writeJSON("parrilla.json", s.parrilla)
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, &s.parrilla)
+}
+
+func (s *Store) loadAds() error {
+	path := filepath.Join(s.dir, "ads.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		s.ads = []Ad{}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, &s.ads)
+}
+
+func (s *Store) loadEffects() error {
+	path := filepath.Join(s.dir, "effects.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		s.effects = []Effect{}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, &s.effects)
+}
+
+func (s *Store) loadLive() error {
+	path := filepath.Join(s.dir, "live.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		s.liveStreams = []LiveStream{}
+		return s.writeJSON("live.json", s.liveStreams)
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, &s.liveStreams)
+}
+
+func (s *Store) loadUsers() error {
+	path := filepath.Join(s.dir, "users.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		s.users = []User{}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, &s.users)
+}
+
+func (s *Store) loadSessions() error {
+	path := filepath.Join(s.dir, "sessions.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		s.sessions = []Session{}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, &s.sessions)
+}
+
+func (s *Store) Channels() []Channel {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Channel, len(s.channels))
+	copy(out, s.channels)
+	return out
+}
+
+func (s *Store) AddChannel(ch Channel) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, ch := range s.channels {
-		if ch.ID == c.ID {
-			return fmt.Errorf("channel %q already exists", c.ID)
+	for _, c := range s.channels {
+		if c.ID == ch.ID {
+			return fmt.Errorf("channel %s already exists", ch.ID)
 		}
 	}
-	s.channels = append(s.channels, c)
+	s.channels = append(s.channels, ch)
 	return s.writeJSON("channels.json", s.channels)
 }
 
-// --- Videos CRUD ---
+func (s *Store) SaveChannel(ch Channel) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, c := range s.channels {
+		if c.ID == ch.ID {
+			s.channels[i] = ch
+			_ = s.writeJSON("channels.json", s.channels)
+			return
+		}
+	}
+	s.channels = append(s.channels, ch)
+	_ = s.writeJSON("channels.json", s.channels)
+}
+
+func (s *Store) DeleteChannel(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, c := range s.channels {
+		if c.ID == id {
+			s.channels = append(s.channels[:i], s.channels[i+1:]...)
+			_ = s.writeJSON("channels.json", s.channels)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) SaveVideo(v Video) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, vd := range s.videos {
+		if vd.ID == v.ID {
+			s.videos[i] = v
+			return s.writeJSON("videos.json", s.videos)
+		}
+	}
+	s.videos = append(s.videos, v)
+	return s.writeJSON("videos.json", s.videos)
+}
+
+func (s *Store) GetVideo(id string) (Video, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, vd := range s.videos {
+		if vd.ID == id {
+			return vd, true
+		}
+	}
+	return Video{}, false
+}
+
+func (s *Store) DeleteVideo(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, vd := range s.videos {
+		if vd.ID == id {
+			s.videos = append(s.videos[:i], s.videos[i+1:]...)
+			_ = s.writeJSON("videos.json", s.videos)
+			return true
+		}
+	}
+	return false
+}
 
 func (s *Store) LoadVideos() []Video {
 	s.mu.RLock()
@@ -215,69 +399,13 @@ func (s *Store) LoadVideos() []Video {
 	return out
 }
 
-func (s *Store) GetVideo(id string) (Video, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, v := range s.videos {
-		if v.ID == id {
-			return v, true
-		}
-	}
-	return Video{}, false
-}
-
-func (s *Store) SaveVideo(v Video) error {
+func (s *Store) SaveParrilla(p []ParrillaSlot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.videos = append(s.videos, v)
-	return s.writeJSON("videos.json", s.videos)
+	s.parrilla = make([]ParrillaSlot, len(p))
+	copy(s.parrilla, p)
+	return s.writeJSON("parrilla.json", s.parrilla)
 }
-
-func (s *Store) DeleteVideo(id string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, v := range s.videos {
-		if v.ID == id {
-			s.videos = append(s.videos[:i], s.videos[i+1:]...)
-			return true, s.writeJSON("videos.json", s.videos)
-		}
-	}
-	return false, nil
-}
-
-// --- Ads & Effects (schema-only entities) ---
-
-func (s *Store) Ads() []Ad {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]Ad, len(s.ads))
-	copy(out, s.ads)
-	return out
-}
-
-func (s *Store) Effects() []Effect {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]Effect, len(s.effects))
-	copy(out, s.effects)
-	return out
-}
-
-func (s *Store) SaveAd(a Ad) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ads = append(s.ads, a)
-	return s.writeJSON("ads.json", s.ads)
-}
-
-func (s *Store) SaveEffect(e Effect) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.effects = append(s.effects, e)
-	return s.writeJSON("effects.json", s.effects)
-}
-
-// --- Parrilla CRUD ---
 
 func (s *Store) LoadParrilla() []ParrillaSlot {
 	s.mu.RLock()
@@ -287,116 +415,79 @@ func (s *Store) LoadParrilla() []ParrillaSlot {
 	return out
 }
 
-func (s *Store) GetParrilla(id string) (ParrillaSlot, bool) {
+func (s *Store) ResolveParrilla() []ResolvedSlot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, p := range s.parrilla {
-		if p.ID == id {
-			return p, true
-		}
-	}
-	return ParrillaSlot{}, false
-}
-
-func (s *Store) SaveParrilla(p ParrillaSlot) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.parrilla = append(s.parrilla, p)
-	return s.writeJSON("parrilla.json", s.parrilla)
-}
-
-func (s *Store) UpdateParrilla(id string, p ParrillaSlot) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, slot := range s.parrilla {
-		if slot.ID == id {
-			s.parrilla[i] = p
-			return true, s.writeJSON("parrilla.json", s.parrilla)
-		}
-	}
-	return false, nil
-}
-
-func (s *Store) DeleteParrilla(id string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, p := range s.parrilla {
-		if p.ID == id {
-			s.parrilla = append(s.parrilla[:i], s.parrilla[i+1:]...)
-			return true, s.writeJSON("parrilla.json", s.parrilla)
-		}
-	}
-	return false, nil
-}
-
-// --- Resolve parrilla ---
-
-// ResolveParrilla returns ResolvedSlots for a given channel and day,
-// replacing each ref ID with the actual Video object (or null + unresolved).
-func (s *Store) ResolveParrilla(channelID string, day int) []ResolvedSlot {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var out []ResolvedSlot
-	for _, p := range s.parrilla {
-		if p.ChannelID != channelID || p.DayOfWeek != day {
-			continue
-		}
+	res := make([]ResolvedSlot, 0, len(s.parrilla))
+	for _, slot := range s.parrilla {
 		rs := ResolvedSlot{
-			ID:        p.ID,
-			ChannelID: p.ChannelID,
-			DayOfWeek: p.DayOfWeek,
-			TimeStart: p.TimeStart,
-			Type:      p.Type,
+			ID:        slot.ID,
+			ChannelID: slot.ChannelID,
+			DayOfWeek: slot.DayOfWeek,
+			TimeStart: slot.TimeStart,
+			Type:      slot.Type,
 		}
-		// Try to resolve ref
-		found := false
-		for _, v := range s.videos {
-			if v.ID == p.Ref {
+		if slot.Type == "vod" {
+			if v, ok := s.getVideoNoLock(slot.Ref); ok {
 				rs.Ref = v
-				found = true
-				break
+				rs.Unresolved = false
+			} else {
+				rs.Ref = nil
+				rs.Unresolved = true
 			}
-		}
-		if !found && p.Ref != "" {
+		} else {
 			rs.Ref = nil
-			rs.Unresolved = true
-		} else if !found && p.Ref == "" {
-			rs.Ref = nil
+			rs.Unresolved = false
 		}
-		out = append(out, rs)
+		res = append(res, rs)
 	}
-	if out == nil {
-		out = []ResolvedSlot{}
-	}
-	return out
+	return res
 }
 
-// HasOverlap checks if a new slot overlaps with existing slots for the same channel/day.
-func (s *Store) HasOverlap(channelID string, day int, timeStart string, excludeID string) bool {
+func (s *Store) getVideoNoLock(id string) (Video, bool) {
+	for _, vd := range s.videos {
+		if vd.ID == id {
+			return vd, true
+		}
+	}
+	return Video{}, false
+}
+
+func (s *Store) HasOverlap(slot ParrillaSlot) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, p := range s.parrilla {
-		if p.ChannelID != channelID || p.DayOfWeek != day || p.ID == excludeID {
-			continue
-		}
-		if p.TimeStart == timeStart {
+	for _, existing := range s.parrilla {
+		if existing.ChannelID == slot.ChannelID && existing.DayOfWeek == slot.DayOfWeek && existing.TimeStart == slot.TimeStart {
 			return true
 		}
 	}
 	return false
 }
 
-// Channels returns loaded channels.
-func (s *Store) Channels() []Channel {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]Channel, len(s.channels))
-	copy(out, s.channels)
-	return out
+func (s *Store) UpdateParrillaSlot(id string, slot ParrillaSlot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.parrilla {
+		if existing.ID == id {
+			s.parrilla[i] = slot
+			_ = s.writeJSON("parrilla.json", s.parrilla)
+			return
+		}
+	}
 }
 
-// --- Live Stream CRUD ---
+func (s *Store) DeleteParrillaSlot(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.parrilla {
+		if existing.ID == id {
+			s.parrilla = append(s.parrilla[:i], s.parrilla[i+1:]...)
+			_ = s.writeJSON("parrilla.json", s.parrilla)
+			return true
+		}
+	}
+	return false
+}
 
 func (s *Store) SaveLiveStream(ls LiveStream) error {
 	s.mu.Lock()
@@ -447,4 +538,90 @@ func (s *Store) LoadLiveStreams() []LiveStream {
 	out := make([]LiveStream, len(s.liveStreams))
 	copy(out, s.liveStreams)
 	return out
+}
+
+
+
+func (s *Store) ResolveParrillaFiltered(channelID string, day int) []ResolvedSlot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	res := make([]ResolvedSlot, 0, len(s.parrilla))
+	for _, slot := range s.parrilla {
+		if channelID != "" && slot.ChannelID != channelID {
+			continue
+		}
+		if day >= 0 && day <= 6 && slot.DayOfWeek != day {
+			continue
+		}
+		rs := ResolvedSlot{
+			ID:        slot.ID,
+			ChannelID: slot.ChannelID,
+			DayOfWeek: slot.DayOfWeek,
+			TimeStart: slot.TimeStart,
+			Type:      slot.Type,
+		}
+		if slot.Type == "vod" {
+			if v, ok := s.getVideoNoLock(slot.Ref); ok {
+				rs.Ref = v
+				rs.Unresolved = false
+			} else {
+				rs.Ref = nil
+				rs.Unresolved = true
+			}
+		} else {
+			rs.Ref = nil
+			rs.Unresolved = false
+		}
+		res = append(res, rs)
+	}
+	return res
+}
+
+func (s *Store) SaveParrillaSlot(slot ParrillaSlot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.parrilla = append(s.parrilla, slot)
+	return s.writeJSON("parrilla.json", s.parrilla)
+}
+
+func (s *Store) HasOverlapSlot(slot ParrillaSlot) bool {
+	return s.HasOverlap2(slot.ChannelID, slot.DayOfWeek, slot.TimeStart, "")
+}
+
+func (s *Store) HasOverlap2(channelID string, dayOfWeek int, timeStart string, excludeID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, existing := range s.parrilla {
+		if excludeID != "" && existing.ID == excludeID {
+			continue
+		}
+		if existing.ChannelID == channelID && existing.DayOfWeek == dayOfWeek && existing.TimeStart == timeStart {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) UpdateParrilla(id string, slot ParrillaSlot) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.parrilla {
+		if existing.ID == id {
+			s.parrilla[i] = slot
+			return true, s.writeJSON("parrilla.json", s.parrilla)
+		}
+	}
+	return false, nil
+}
+
+func (s *Store) DeleteParrilla(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.parrilla {
+		if existing.ID == id {
+			s.parrilla = append(s.parrilla[:i], s.parrilla[i+1:]...)
+			return true, s.writeJSON("parrilla.json", s.parrilla)
+		}
+	}
+	return false, nil
 }
