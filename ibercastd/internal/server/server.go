@@ -69,6 +69,14 @@ func NewRouter(deps *ServerDeps) *mux.Router {
 		})
 	})
 
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			setSecurityHeaders(w)
+			next.ServeHTTP(w, r)
+		})
+	})
+
+
 	r.HandleFunc("/api/health", healthHandler).Methods("GET")
 	r.HandleFunc("/api/channels", listChannels(deps)).Methods("GET")
 	r.HandleFunc("/api/channels", authMiddleware(createChannel(deps), deps)).Methods("POST")
@@ -89,6 +97,18 @@ func NewRouter(deps *ServerDeps) *mux.Router {
 	r.HandleFunc("/api/parrilla", authMiddleware(createParrilla(deps), deps)).Methods("POST")
 	r.HandleFunc("/api/parrilla/{id}", authMiddleware(updateParrilla(deps), deps)).Methods("PUT")
 	r.HandleFunc("/api/parrilla/{id}", authMiddleware(deleteParrilla(deps), deps)).Methods("DELETE")
+
+
+	// Auth
+	r.HandleFunc("/api/auth/login", loginHandler(deps)).Methods("POST")
+	r.HandleFunc("/api/auth/logout", logoutHandler(deps)).Methods("POST")
+	r.HandleFunc("/api/auth/me", meHandler(deps)).Methods("GET")
+	r.HandleFunc("/api/auth/csrf", csrfHandler(deps)).Methods("GET")
+	// Users (admin only)
+	r.HandleFunc("/api/users", usersListHandler(deps)).Methods("GET")
+	r.HandleFunc("/api/users", usersCreateHandler(deps)).Methods("POST")
+	r.HandleFunc("/api/users/{id}", usersUpdateHandler(deps)).Methods("PUT")
+	r.HandleFunc("/api/users/{id}", usersDeleteHandler(deps)).Methods("DELETE")
 
 	// Live streaming (admin)
 	r.HandleFunc("/api/live", createLiveStream(deps)).Methods("POST")
@@ -924,4 +944,45 @@ func NewServer(addr string, handler http.Handler) *http.Server {
 // Start listens and serves until the server closes (blocking).
 func Start(addr string, handler http.Handler) error {
 	return NewServer(addr, handler).ListenAndServe()
+}
+
+func loginHandler(deps *ServerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+	}
+}
+func logoutHandler(deps *ServerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+	}
+}
+func meHandler(deps *ServerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+	}
+}
+func csrfHandler(deps *ServerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+	}
+}
+func usersListHandler(deps *ServerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+	}
+}
+func usersCreateHandler(deps *ServerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+	}
+}
+func usersUpdateHandler(deps *ServerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+	}
+}
+func usersDeleteHandler(deps *ServerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+	}
 }
