@@ -1020,12 +1020,55 @@ func csrfHandler(deps *ServerDeps) http.HandlerFunc {
 }
 func usersListHandler(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+		sc, ok := deps.getSessionFromRequest(r)
+		if !ok || sc.Role != "admin" {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		deps.Store.CleanupSessions()
+		writeJSON(w, http.StatusOK, deps.Store.ListUsersSanitized())
 	}
 }
 func usersCreateHandler(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+		sc, ok := deps.getSessionFromRequest(r)
+		if !ok || sc.Role != "admin" {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		var body struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Role     string `json:"role"`
+			Active   bool   `json:"active"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		if !auth.ValidUsername(body.Username) {
+			writeError(w, http.StatusBadRequest, "invalid username")
+			return
+		}
+		if body.Role != "admin" && body.Role != "uploader" {
+			body.Role = "uploader"
+		}
+		hash, err := auth.HashPassword(body.Password)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "hash failed")
+			return
+		}
+		uid, _ := auth.GenerateID()
+		u := store.User{
+			ID: uid, Username: body.Username, Role: body.Role, PasswordHash: hash,
+			Active: body.Active, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}
+		if err := deps.Store.AddUser(u); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		u.PasswordHash = ""
+		writeJSON(w, http.StatusCreated, u)
 	}
 }
 func usersUpdateHandler(deps *ServerDeps) http.HandlerFunc {

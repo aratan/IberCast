@@ -717,3 +717,19 @@ func (s *Store) CleanupSessions() {
 		_ = s.writeJSON("sessions.json", s.sessions)
 	}
 }
+
+func (s *Store) AddUser(u User) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ex := range s.users {
+		if strings.EqualFold(ex.Username, u.Username) || ex.ID == u.ID {
+			return fmt.Errorf("user exists")
+		}
+	}
+	if u.CreatedAt.IsZero() {
+		u.CreatedAt = time.Now()
+	}
+	u.UpdatedAt = time.Now()
+	s.users = append(s.users, u)
+	return s.writeJSON("users.json", s.users)
+}
