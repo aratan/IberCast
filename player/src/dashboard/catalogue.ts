@@ -22,12 +22,15 @@ const MAX_UPLOAD_BYTES = 500 * 1024 * 1024 // 500 MiB — align with backend def
 export function CatalogueView(
   container: HTMLElement,
   apiBase: string,
-  token?: string
+  _token?: string
 ): { refresh: () => Promise<void> } {
   // Attach auth header if a token is configured (optional).
   function authHeaders(extra?: Record<string, string>): Record<string, string> {
     const h: Record<string, string> = { ...(extra ?? {}) }
-    if (token) h.Authorization = `Bearer ${token}`
+    const sess = sessionStorage.getItem('ibercast-session')
+    if (sess) {
+      try { const j = JSON.parse(sess); if (j.csrf) h['X-CSRF-Token'] = j.csrf } catch {}
+    }
     return h
   }
   const listEl = document.createElement('div')

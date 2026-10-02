@@ -9,7 +9,7 @@ import {
 } from './loader'
 import { initPlayout } from './viewer/playout'
 import { WallView } from './wall'
-import { requireAdminToken } from './admin/login'
+import { requireAdminSession } from './admin/login'
 import { AdminDashboard } from './admin/dashboard'
 import { gatewayBase } from './gateway'
 
@@ -72,8 +72,8 @@ if (effectiveMode === 'admin') {
   hideAll()
   const root = show('admin-root')!
   const apiBase = params.get('api') || location.origin
-  requireAdminToken(apiBase).then((token) => {
-    if (token) AdminDashboard(root, apiBase, token)
+  requireAdminSession(apiBase).then((sess) => {
+    AdminDashboard(root, apiBase, sess.csrf)
   })
 }
 

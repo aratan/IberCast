@@ -3,7 +3,7 @@
  */
 import { CatalogueView } from '../dashboard/catalogue'
 import { ScheduleView } from '../dashboard/schedule'
-import { clearToken } from './login'
+import { clearSession } from './login'
 import { openPlayer } from '../player-modal'
 
 interface VideoSummary {
@@ -51,7 +51,7 @@ export function AdminDashboard(rootEl: HTMLElement, apiBase: string, token: stri
   rootEl.appendChild(topbar)
 
   document.getElementById('admin-logout')?.addEventListener('click', () => {
-    clearToken()
+    clearSession(); sessionStorage.clear(); location.reload()
     location.reload()
   })
 
