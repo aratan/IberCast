@@ -21,6 +21,7 @@ import (
 	"github.com/victorarbiol/ibercastd/internal/ingest"
 	"github.com/victorarbiol/ibercastd/internal/publish"
 	"github.com/victorarbiol/ibercastd/internal/store"
+	"github.com/victorarbiol/ibercastd/internal/auth"
 )
 
 // Config needed by the server to coordinate upload → ingest → IPFS.
@@ -948,7 +949,40 @@ func Start(addr string, handler http.Handler) error {
 
 func loginHandler(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+		var body struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		u, ok := deps.Store.GetUserByName(body.Username)
+		if !ok || !u.Active {
+			writeError(w, http.StatusUnauthorized, "invalid credentials")
+			return
+		}
+		if okp, _ := auth.VerifyPassword(body.Password, u.PasswordHash); !okp {
+			writeError(w, http.StatusUnauthorized, "invalid credentials")
+			return
+		}
+		deps.Store.CleanupSessions()
+		csrf, _ := auth.CSRFToken()
+		sid, _ := auth.SessionID()
+		exp := auth.SessionExpiry()
+		sess := store.Session{
+			ID: sid, UserID: u.ID, Username: u.Username, Role: u.Role, CSRF: csrf,
+			ExpiresAt: exp, LastSeen: time.Now(), CreatedAt: time.Now(),
+		}
+		_ = deps.Store.CreateSession(sess)
+		http.SetCookie(w, &http.Cookie{
+			Name: sessionCookie, Value: sid, Path: "/", HttpOnly: true,
+			Expires: exp, SameSite: http.SameSiteLaxMode,
+		})
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"user": map[string]string{"id": u.ID, "username": u.Username, "role": u.Role},
+			"csrf": csrf,
+		})
 	}
 }
 func logoutHandler(deps *ServerDeps) http.HandlerFunc {

@@ -699,3 +699,21 @@ func (s *Store) CreateSession(sess Session) error {
 	s.sessions = append(s.sessions, sess)
 	return s.writeJSON("sessions.json", s.sessions)
 }
+
+func (s *Store) CleanupSessions() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	n := 0
+	for _, ss := range s.sessions {
+		if now.After(ss.ExpiresAt) {
+			continue
+		}
+		s.sessions[n] = ss
+		n++
+	}
+	if n != len(s.sessions) {
+		s.sessions = s.sessions[:n]
+		_ = s.writeJSON("sessions.json", s.sessions)
+	}
+}
