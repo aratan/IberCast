@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"context"
 	"sync"
 	"time"
 
@@ -51,6 +52,10 @@ var (
 	loginLimiter = rate.NewLimiter(rate.Every(time.Second), 10)
 	apiLimiter   = rate.NewLimiter(rate.Every(time.Second), 50)
 )
+
+type ctxKey string
+
+const sessionContextKey ctxKey = "session"
 
 func NewRouter(deps *ServerDeps) *mux.Router {
 	r := mux.NewRouter()
@@ -252,7 +257,17 @@ func (s *ServerDeps) requireRole(w http.ResponseWriter, sc SessionContext, roles
 // Legacy token auth middleware kept minimal (not used with sessions) - noop
 func authMiddleware(next http.HandlerFunc, deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		next(w, r)
+		sc, ok := deps.getSessionFromRequest(r)
+		if deps != nil && deps.EnableAuth && !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		// store in context if needed
+		r2 := r
+		if ok {
+			r2 = r.WithContext(context.WithValue(r.Context(), sessionContextKey, sc))
+		}
+		next(w, r2)
 	}
 }
 
