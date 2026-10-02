@@ -987,17 +987,35 @@ func loginHandler(deps *ServerDeps) http.HandlerFunc {
 }
 func logoutHandler(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+		c, err := r.Cookie(sessionCookie)
+		if err == nil {
+			deps.Store.DeleteSession(c.Value)
+			http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 func meHandler(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+		sc, ok := deps.getSessionFromRequest(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"user": map[string]string{"id": sc.UserID, "username": sc.Username, "role": sc.Role},
+			"csrf": sc.CSRF,
+		})
 	}
 }
 func csrfHandler(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "auth not fully wired yet")
+		sc, ok := deps.getSessionFromRequest(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"csrf": sc.CSRF})
 	}
 }
 func usersListHandler(deps *ServerDeps) http.HandlerFunc {
