@@ -153,34 +153,77 @@ func safeFilename(filename string) bool {
 	return true
 }
 
-// requireAuth checks for a valid admin token in the Authorization header.
-// Returns 401 if auth is enabled but token is missing/invalid.
-func requireAuth(w http.ResponseWriter, r *http.Request, deps *ServerDeps) bool {
-	if !deps.EnableAuth {
-		return true // auth not enabled, allow
-	}
+// --- Auth/session/CSRF helpers (session-based) ---
 
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-		writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
+const (
+	sessionCookie = "ibercast_sid"
+	csrfHeader    = "X-CSRF-Token"
+)
+
+type SessionContext struct {
+	UserID   string
+	Username string
+	Role     string
+	CSRF     string
+}
+
+func (s *ServerDeps) getSessionFromRequest(r *http.Request) (SessionContext, bool) {
+	if !s.EnableAuth {
+		return SessionContext{}, false
+	}
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return SessionContext{}, false
+	}
+	sess, ok := s.Store.GetSession(c.Value)
+	if !ok {
+		return SessionContext{}, false
+	}
+	if time.Now().After(sess.ExpiresAt) {
+		s.Store.DeleteSession(sess.ID)
+		return SessionContext{}, false
+	}
+	s.Store.TouchSession(sess.ID)
+	return SessionContext{UserID: sess.UserID, Username: sess.Username, Role: sess.Role, CSRF: sess.CSRF}, true
+}
+
+func (s *ServerDeps) requireSession(w http.ResponseWriter, r *http.Request) (SessionContext, bool) {
+	sc, ok := s.getSessionFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return SessionContext{}, false
+	}
+	return sc, true
+}
+
+func (s *ServerDeps) requireCSRF(w http.ResponseWriter, r *http.Request, sc SessionContext) bool {
+	if !s.EnableAuth {
+		return true
+	}
+	token := r.Header.Get(csrfHeader)
+	if token == "" || token != sc.CSRF {
+		writeError(w, http.StatusForbidden, "csrf token invalid")
 		return false
 	}
-
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	if token != deps.AuthToken {
-		writeError(w, http.StatusUnauthorized, "invalid token")
-		return false
-	}
-
 	return true
 }
 
-// authMiddleware wraps handlers that require admin authentication.
+func (s *ServerDeps) requireRole(w http.ResponseWriter, sc SessionContext, roles ...string) bool {
+	if !s.EnableAuth {
+		return true
+	}
+	for _, rr := range roles {
+		if sc.Role == rr {
+			return true
+		}
+	}
+	writeError(w, http.StatusForbidden, "forbidden")
+	return false
+}
+
+// Legacy token auth middleware kept minimal (not used with sessions) - noop
 func authMiddleware(next http.HandlerFunc, deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAuth(w, r, deps) {
-			return
-		}
 		next(w, r)
 	}
 }
@@ -579,10 +622,7 @@ func listLiveStreams(deps *ServerDeps) http.HandlerFunc {
 
 func createLiveStream(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAuth(w, r, deps) {
-			return
-		}
-		var req LiveRequest
+				var req LiveRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON")
 			return
@@ -617,10 +657,7 @@ func createLiveStream(deps *ServerDeps) http.HandlerFunc {
 
 func updateLiveStream(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAuth(w, r, deps) {
-			return
-		}
-		id := mux.Vars(r)["id"]
+				id := mux.Vars(r)["id"]
 		if !safeID(id) {
 			writeError(w, http.StatusBadRequest, "invalid id")
 			return
@@ -659,10 +696,7 @@ func updateLiveStream(deps *ServerDeps) http.HandlerFunc {
 
 func deleteLiveStream(deps *ServerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAuth(w, r, deps) {
-			return
-		}
-		id := mux.Vars(r)["id"]
+				id := mux.Vars(r)["id"]
 		if !safeID(id) {
 			writeError(w, http.StatusBadRequest, "invalid id")
 			return

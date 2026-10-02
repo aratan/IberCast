@@ -651,3 +651,51 @@ func (s *Store) GetUserByName(username string) (User, bool) {
 	}
 	return User{}, false
 }
+
+func (s *Store) GetSession(id string) (Session, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, ss := range s.sessions {
+		if ss.ID == id {
+			return ss, true
+		}
+	}
+	return Session{}, false
+}
+
+func (s *Store) DeleteSession(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, ss := range s.sessions {
+		if ss.ID == id {
+			s.sessions = append(s.sessions[:i], s.sessions[i+1:]...)
+			_ = s.writeJSON("sessions.json", s.sessions)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) TouchSession(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, ss := range s.sessions {
+		if ss.ID == id {
+			if time.Now().After(ss.ExpiresAt) {
+				continue
+			}
+			ss.LastSeen = time.Now()
+			s.sessions[i] = ss
+			_ = s.writeJSON("sessions.json", s.sessions)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) CreateSession(sess Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions = append(s.sessions, sess)
+	return s.writeJSON("sessions.json", s.sessions)
+}
