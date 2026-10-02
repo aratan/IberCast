@@ -67,7 +67,7 @@ func main() {
 		if err := s.AddUser(u); err != nil {
 				log.Fatalf("admin bootstrap: %%v", err)
 			}
-		fmt.Fprintf(os.Stdout, "ibercastd: created initial admin\nusername: admin\npassword: %%s\n", pass)
+		fmt.Fprintf(os.Stdout, "ibercastd: created initial admin\nusername: admin\npassword: %s\n", pass)
 		} else {
 		fmt.Fprintf(os.Stdout, "ibercastd: auth disabled, no admin created\n")
 		}
