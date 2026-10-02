@@ -44,7 +44,8 @@ func Parse() (*Config, error) {
 	kuboURL := fs.String("kubo-url", DefaultKuboURL, "Kubo RPC API endpoint")
 	gatewayURL := fs.String("gateway-url", DefaultGatewayURL, "IPFS gateway URL")
 	maxFileSize := fs.Int64("max-file-size", DefaultMaxFileSize, "Maximum upload size in bytes")
-	adminToken := fs.String("admin-token", os.Getenv("IBERCASTD_ADMIN_TOKEN"), "Admin API auth token (enables auth when set)")
+	adminToken := fs.String("admin-token", os.Getenv("IBERCASTD_ADMIN_TOKEN"), "Admin API auth token (optional)")
+	enableAuth := fs.Bool("auth-enabled", false, "Enable authentication (fail-closed unless admin-token or enabled)")
 
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		return nil, fmt.Errorf("parse flags: %w", err)
@@ -58,7 +59,7 @@ func Parse() (*Config, error) {
 		GatewayURL:  *gatewayURL,
 		MaxFileSize: *maxFileSize,
 		AdminToken:  *adminToken,
-		EnableAuth:  *adminToken != "",
+		EnableAuth:  *enableAuth || *adminToken != "" || os.Getenv("IBERCAST_AUTH_ENABLED") == "true" || os.Getenv("IBERCAST_AUTH_ENABLED") == "1",
 	}
 
 	// Environment overrides apply only when the flag was NOT explicitly set.

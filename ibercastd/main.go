@@ -20,6 +20,7 @@ import (
 	"github.com/victorarbiol/ibercastd/internal/config"
 	"github.com/victorarbiol/ibercastd/internal/server"
 	"github.com/victorarbiol/ibercastd/internal/store"
+	"github.com/victorarbiol/ibercastd/internal/auth"
 )
 
 func main() {
@@ -44,6 +45,32 @@ func main() {
 	s, err := store.New(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("store: %v", err)
+	}
+
+	// Bootstrap admin if no users exist
+	users := s.ListUsersSanitized()
+	if len(users) == 0 {
+		if cfg.EnableAuth {
+			pass, err := auth.GenerateID()
+			if err != nil {
+				pass, _ = auth.SessionID()
+			}
+		hash, err := auth.HashPassword(pass)
+		if err != nil {
+				log.Fatalf("admin bootstrap hash: %%v", err)
+			}
+		uid, _ := auth.GenerateID()
+		u := store.User{
+			ID: uid, Username: "admin", Role: "admin", PasswordHash: hash,
+			Active: true, ForcePasswordChange: true, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}
+		if err := s.AddUser(u); err != nil {
+				log.Fatalf("admin bootstrap: %%v", err)
+			}
+		fmt.Fprintf(os.Stdout, "ibercastd: created initial admin\nusername: admin\npassword: %%s\n", pass)
+		} else {
+		fmt.Fprintf(os.Stdout, "ibercastd: auth disabled, no admin created\n")
+		}
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
