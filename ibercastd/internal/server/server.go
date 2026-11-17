@@ -461,7 +461,7 @@ func uploadVideo(deps *ServerDeps) http.HandlerFunc {
 			if len(mb) >= 12 && mb[4]=='f' && mb[5]=='t' && mb[6]=='y' && mb[7]=='p' {
 				// check common brands: isom, avc1, mp41, iso2, qt, m4v
 				brand := string(mb[8:12])
-				if brand=="isom"||brand=="avc1"||brand=="mp41"||brand=="iso2"||brand=="mp42"||brand=="isom"||brand=="M4V "||brand=="qt  "||string(mb[8:11])=="qt" {
+				if brand=="isom"||brand=="avc1"||brand=="mp41"||brand=="iso2"||brand=="mp42"||brand=="M4V "||brand=="qt  "||string(mb[8:11])=="qt" {
 					okm = true
 				}
 				// also accept any valid ftyp? be strict but allow common
