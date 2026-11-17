@@ -17,10 +17,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/victorarbiol/ibercastd/internal/auth"
 	"github.com/victorarbiol/ibercastd/internal/config"
 	"github.com/victorarbiol/ibercastd/internal/server"
 	"github.com/victorarbiol/ibercastd/internal/store"
-	"github.com/victorarbiol/ibercastd/internal/auth"
 )
 
 func main() {
@@ -47,29 +47,38 @@ func main() {
 		log.Fatalf("store: %v", err)
 	}
 
-	// Bootstrap admin if no users exist
+	// Bootstrap an initial admin only when authentication is enabled and no users exist.
 	users := s.ListUsersSanitized()
 	if len(users) == 0 {
 		if cfg.EnableAuth {
 			pass, err := auth.GenerateID()
 			if err != nil {
-				pass, _ = auth.SessionID()
+				pass, err = auth.SessionID()
+				if err != nil {
+					log.Fatalf("admin bootstrap password generation: %v", err)
+				}
 			}
-		hash, err := auth.HashPassword(pass)
-		if err != nil {
-				log.Fatalf("admin bootstrap hash: %%v", err)
+
+			hash, err := auth.HashPassword(pass)
+			if err != nil {
+				log.Fatalf("admin bootstrap hash: %v", err)
 			}
-		uid, _ := auth.GenerateID()
-		u := store.User{
-			ID: uid, Username: "admin", Role: "admin", PasswordHash: hash,
-			Active: true, ForcePasswordChange: true, CreatedAt: time.Now(), UpdatedAt: time.Now(),
-		}
-		if err := s.AddUser(u); err != nil {
-				log.Fatalf("admin bootstrap: %%v", err)
+
+			uid, err := auth.GenerateID()
+			if err != nil {
+				log.Fatalf("admin bootstrap user ID: %v", err)
 			}
-		fmt.Fprintf(os.Stdout, "ibercastd: created initial admin\nusername: admin\npassword: %s\n", pass)
+
+			u := store.User{
+				ID: uid, Username: "admin", Role: "admin", PasswordHash: hash,
+				Active: true, ForcePasswordChange: true, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}
+			if err := s.AddUser(u); err != nil {
+				log.Fatalf("admin bootstrap: %v", err)
+			}
+			fmt.Fprintf(os.Stdout, "ibercastd: created initial admin\nusername: admin\npassword: %s\n", pass)
 		} else {
-		fmt.Fprintf(os.Stdout, "ibercastd: auth disabled, no admin created\n")
+			fmt.Fprintln(os.Stdout, "ibercastd: auth disabled, no admin created")
 		}
 	}
 
@@ -83,30 +92,25 @@ func main() {
 		EnableAuth:   cfg.EnableAuth,
 		AuthToken:    cfg.AdminToken,
 		PublicPort:   cfg.Port,
-		Live:         nil, // StartLivePoller lazily creates a monitor
+		Live:         nil, // StartLivePoller lazily creates a monitor.
 	}
 
-	// Live streaming: poll MediaMTX so pending→live→ended transitions happen
-	// automatically while OBS pushes (or stops pushing) RTMP.
+	// Track MediaMTX paths so pending → live → ended transitions happen automatically.
 	server.StartLivePoller(deps)
-
 	router := server.NewRouter(deps)
 
-	// Security wrapper: reject path traversal BEFORE gorilla/mux processes the request.
-	// Go's HTTP server normalizes paths, so `..` in a URL gets cleaned before the handler.
-	// This wrapper catches the raw request URI. Also adds permissive CORS so the
-	// browser player (dev server or IPFS gateway) can call the API cross-origin.
+	// Reject traversal before mux sees the request. Go's HTTP server may clean paths.
+	// CORS is enabled because the browser player can run on a separate origin.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.RequestURI, "..") || strings.Contains(r.URL.Path, "..") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "path traversal rejected"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "path traversal rejected"})
 			return
 		}
-		// CORS: allow any origin for API calls from the browser player.
+
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		// Echo the requested headers (the dashboard sends Authorization for admin ops).
 		allowHdrs := r.Header.Get("Access-Control-Request-Headers")
 		if allowHdrs == "" {
 			allowHdrs = "Content-Type"
@@ -120,15 +124,12 @@ func main() {
 	})
 
 	srv := server.NewServer(addr, handler)
-
-	// Start listening in background
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("ibercastd listening on %s (data: %s, kubo: %s)", addr, cfg.DataDir, cfg.KuboURL)
 		errCh <- srv.ListenAndServe()
 	}()
 
-	// Wait for SIGINT / SIGTERM or server failure
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	select {

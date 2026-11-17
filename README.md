@@ -4,214 +4,152 @@
   <img src="assets/ibercast-logo.svg" alt="IberCast logo" width="180">
 </p>
 
-**Streaming de vídeo P2P sobre IPFS.** El vídeo se fragmenta en HLS y se
-distribuye entre los propios espectadores: cada navegador que reproduce
-actúa a la vez como nodo que sirve fragmentos a otros, reduciendo el coste
-de banda ancha del origin a cambios de eficiencia de red.
+**Plataforma experimental de streaming VOD y en directo sobre IPFS, con reproductor web HLS y recuperación P2P.**
 
----
+IberCast combina un daemon en Go, Kubo/IPFS, FFmpeg, MediaMTX y un reproductor TypeScript basado en hls.js y Helia. El objetivo es publicar vídeo como contenido direccionado por contenido y permitir que el navegador intente recuperar bloques desde la red P2P, con fallback HTTP cuando no haya peers disponibles.
 
-## Objetivos
+> **Estado:** prototipo funcional en desarrollo. El repositorio contiene el daemon, el reproductor, el stack local y pruebas automatizadas. No debe interpretarse como un servicio de producción auditado ni como una garantía de distribución P2P en todos los navegadores o redes.
 
-1. **Distribución P2P real** — los viewers aportan ancho de banda vía
-   WebRTC; el origin solo siembra los bloques raíz y los manifiestos.
-2. **Coste ~cero de origin** — apoyarse en gateways IPFS públicos o propios
-   en vez de CDNs de pago.
-3. **Resiliencia por diseño** — sin punto único de fallo: el contenido
-   sobrevive mientras haya al menos un nodo con los bloques.
-4. **Censura-resistencia** (opcional/futuro) — sin coordenador central que
-   pueda apagar la emisión.
-5. **Privacidad del espectador** — sin cuentas, tracking mínimo, métricas
-   agregadas en el cliente.
+## Capacidades implementadas
 
-## Alcance (MVP)
+- **VOD:** API de subida, transcodificación HLS con FFmpeg y publicación en Kubo/IPFS.
+- **Reproductor web:** TypeScript, hls.js y Helia, con loader personalizado y fallback a gateway HTTP.
+- **Directos:** ingestión RTMP mediante MediaMTX, HLS de baja latencia y monitorización del estado del stream.
+- **Panel y API:** gestión de canales y operaciones de administración.
+- **Operación:** lanzador local `run.sh`, configuración por flags/variables de entorno y workflow de GitHub Actions.
+- **Verificación:** typecheck/build del player, vet/build/tests del daemon y harness E2E para el DAG HLS; el modo navegador es opcional.
 
-- VOD: subir un vídeo → transcodificar a HLS → publicar en IPFS como CAR
-  → reproducir desde el navegador por P2P.
-- Live streaming: ingest RTMP/WebRTC → MediaMTX → HLS corto (ventanas 4–6 s)
-  → proxy same-origin en `ibercastd` → reproducción en el navegador
-  (sin CORS, un solo puerto público).
-- Fuera de alcance por ahora: chat en vivo, DRM, transcodificación en el
-  navegador.
+## Arquitectura
 
-## Stack elegido (híbrido Go + TypeScript)
-
-| Capa | Tecnología | Motivo |
-|---|---|---|
-| Nodo / seed backend | **Go** + `libp2p` / `go-ipfs-api` (Kubo RPC) | Madurez del ecosistema IPFS, goroutines para cientos de conexiones simultáneas, bajo consumo de memoria en seeders |
-| Ingest en vivo | **MediaMTX** (RTMP :1935) | Estándar de facto para emisores (OBS, ffmpeg); empaqueta a HLS corto |
-| Transcodificación | **FFmpeg** → HLS (`.m3u8` + segmentos `.ts`/`.m4s`) | Estándar de facto; los segmentos son bloques IPFS naturales |
-| Cliente / reproductor | **TypeScript** + **Helia** (JS-IPFS en navegador) + **WebRTC** | Los navegadores se convierten en nodos P2P sin plugins |
-| Reproducción | **hls.js** con loader personalizado | Permite interceptar cada petición de segmento y resolverla primero vía IPFS/WebRTC, cayendo al gateway HTTP como último recurso |
-
-### Por qué híbrido y no solo un lenguaje
-
-- La infraestructura P2P pesada (seed nodes, publicación CAR, coordinación
-  de swarms) vive mejor en Go junto a Kubo/libp2p.
-- El P2P de navegador (WebRTC data channels + Helia) solo existe en
-  JS/TS; es el núcleo del modelo de coste cero.
-
-## Arquitectura (MVP)
-
-```
-            ┌──────────────┐   HLS segments (CAR)   ┌─────────────────┐
- vídeo ──►  │  ibercastd   │ ─────────────────────► │  IPFS network   │
- (input)    │  (Go seed)   │   manifest root CID    │  (Kubo / Helia) │
-            └──────────────┘                        └────────┬────────┘
-                      ▲                                      │ bitswap
-                      │ admin API (publicar, listar)         ▼
-                      │                             ┌─────────────────┐
-        operador ─────┘                             │  web player     │
-                                                    │  TS + Helia +   │
-                                                    │  hls.js (P2P)   │
-                                                    └─────────────────┘
+```mermaid
+flowchart LR
+    OBS[OBS / FFmpeg] -->|RTMP| MTX[MediaMTX]
+    FILE[Vídeo VOD] --> DAEMON[ibercastd · Go]
+    MTX -->|HLS live| DAEMON
+    DAEMON -->|FFmpeg · HLS · Kubo RPC| IPFS[(Kubo / IPFS)]
+    IPFS -->|Gateway HTTP| PLAYER[Web player · hls.js]
+    PLAYER <-->|Helia / libp2p / WebRTC cuando es posible| PEERS[Peers IPFS]
+    DAEMON --> API[REST API / Admin]
+    PLAYER --> API
 ```
 
-- **`ibercastd`** (Go): transcodifica con FFmpeg, empaqueta a CAR, publica
-  en IPFS, sirve API admin/REST para subir y listar canales, e ingesta en
-  vivo: valida `streamKey`, marca un stream como `live` cuando MediaMTX
-  reporta el path activo (poller 5 s) y sirve HLS con proxy same-origin.
-- **`player`** (TS): reproductor embebible; loader de hls.js que pregunta
-  primero a la swarm P2P (Helia + WebRTC) y hace fallback a gateway HTTP.
-  Vista `wall` para el grid de canales en vivo.
+### Componentes
 
-## Requisitos previos
+| Componente | Responsabilidad |
+|---|---|
+| `ibercastd/` | API HTTP, ingestión/transcodificación, publicación IPFS, persistencia y gestión de directos |
+| `player/` | Interfaz web, wall/viewer/admin y loader HLS con Helia |
+| `run.sh` | Arranque coordinado del entorno de desarrollo |
+| `scripts/e2e.mjs` | Comprueba el DAG HLS por HTTP y, opcionalmente, reproducción en navegador |
+| `.github/workflows/ci.yml` | Typecheck/build del player y vet/build/tests del daemon |
 
-Para ejecutar IberCast localmente necesitas tener instaladas estas aplicaciones externas:
+## Requisitos
 
-| Aplicación | Uso | Notas |
-|---|---|---|
-| [OBS Studio](https://obsproject.com/es) | Emisión en directo (live streaming). Envía RTMP a `rtmp://localhost:1935/live/<streamKey>`. | Solo necesario para probar **directos**. No se requiere para VOD. |
-| [IPFS (Kubo)](https://docs.ipfs.tech/install/) | Almacenamiento y distribución P2P de vídeos (manifiestos, segmentos y CARs). | Ejecutar con `ipfs daemon`. **El gateway HTTP debe escuchar en `http://127.0.0.1:8080`** (ver aviso de gateway más abajo). |
-| [FFmpeg](https://ffmpeg.org/download.html) | Transcodificación a HLS (usado por `ibercastd`). | Necesario para subir vídeos y para la ingestión en directo. |
-| [Go](https://go.dev/dl/) (>= 1.22) | Compila y ejecuta `ibercastd`. | Requerido por `run.sh`. |
-| [Node.js](https://nodejs.org/es) + npm | Sirve el player con Vite (`npm run dev`). | Requerido por `run.sh`. |
+- Go **1.26** (según `ibercastd/go.mod`)
+- Node.js 20 o superior y npm
+- FFmpeg
+- Kubo/IPFS, si se prueba publicación VOD o recuperación mediante gateway
+- MediaMTX, si se prueban emisiones en directo
+- OBS Studio o FFmpeg como emisor RTMP, para pruebas live
 
-## Roadmap
+El reproductor puede ejecutarse por separado; Kubo y MediaMTX solo son necesarios para los flujos que los utilizan.
 
-### Fase 0 — Fundaciones
-- [x] Repo, git init y estructura de carpetas.
-- [x] Documentación de arquitectura y flujos (docs/, con diagramas Mermaid).
-- [x] CI básica (GitHub Actions: typecheck + build player; daemon en guard).
+## Inicio rápido
 
-### Fase 1 — Pipeline VOD
-- [x] CLI/API `ibercastd`: subir vídeo → HLS con FFmpeg (3 calidades).
-- [x] Empaquetado de la salida HLS a CAR y publicación en IPFS (Kubo RPC).
-- [x] Endpoint que devuelve el CID raíz del manifiesto.
-- [x] Miniatura (`thumb.jpg`) generada al publicar y pineada con el manifiesto.
-
-### Fase 2 — Reproductor P2P *(scaffold listo, build verificado)*
-- [x] `player` en TS con Helia (navegador) + bitswap.
-- [x] Loader custom de hls.js: resolver segmentos por path UnixFS.
-- [x] Fallback transparente a gateway HTTP si P2P no responde a tiempo.
-- [x] Métricas: segmentos/bytes servidos por P2P vs gateway vs caché.
-- [x] Verificación E2E con un vídeo publicado por `ibercastd` (publicar → gateway → hls.js).
-
-### Fase 3 — Producción
-- [x] Seed nodes con proved plumbing (systemd/docker).
-- [x] Pinning remoto (Pinata/web3.storage o Kubo cluster propio).
-- [x] Live streaming con HLS corto (ventanas de 4–6 s) + modo evento.
-- [x] Autenticación de operador y multi-tenant.
-
-## ⚠️ Gateway de IPFS: debe estar en el puerto 8080
-
-Todo el código asume que el gateway HTTP de Kubo escucha en **8080**
-(`player/src/gateway.ts`, `internal/config/config.go`, `run.sh`, `deploy/`).
-Si lo mueves a otro puerto, **los vídeos no se ven**: el player pide los
-manifiestos y segmentos a `http://{cid}.ipfs.localhost:8080` y recibe
-`ERR_CONNECTION_REFUSED`.
+El script de desarrollo coordina MediaMTX, Kubo, el daemon y Vite. Revisa primero sus requisitos y opciones:
 
 ```bash
-# Comprobar
-ipfs config Addresses.Gateway   # debe ser /ip4/127.0.0.1/tcp/8080
-
-# Restaurar si está movido (cambia la config global de IPFS, fuera del repo)
-ipfs config Addresses.Gateway /ip4/127.0.0.1/tcp/8080
-ipfs shutdown && ipfs daemon    # el gateway solo cambia al reiniciar
+git clone https://github.com/aratan/IberCast.git
+cd IberCast
+chmod +x run.sh
+./run.sh
 ```
 
-Este ajuste **no está en git** (vive en `~/.ipfs/config`), así que no se
-comparte entre máquinas: hay que verificarlo también en el VPS.
+Opciones útiles del lanzador:
 
-Diagnóstico rápido si no reproducen:
+```bash
+./run.sh --no-live       # no iniciar MediaMTX
+./run.sh --no-ipfs       # no iniciar Kubo
+./run.sh --no-player     # no iniciar Vite
+./run.sh --daemon-only   # alias de --no-player
+```
+
+Para compilar y ejecutar solo el daemon:
+
+```bash
+cd ibercastd
+go test ./...
+go build -o ibercastd .
+./ibercastd serve --port 8585
+```
+
+Para el reproductor:
+
+```bash
+cd player
+npm ci
+npm run typecheck
+npm run build
+npm run dev
+```
+
+La configuración del daemon admite flags y variables de entorno. Los valores por defecto y opciones disponibles están definidos en `ibercastd/internal/config/config.go`.
+
+## Verificación
+
+Desde la raíz del repositorio:
+
+```bash
+# Daemon Go
+cd ibercastd
+go vet ./...
+go test ./...
+go build ./...
+cd ..
+
+# Player
+cd player
+npm ci
+npm run typecheck
+npm run build
+cd ..
+
+# E2E: resolver manifiesto, playlists y segmentos desde un gateway
+node scripts/e2e.mjs --gw https://gateway.pinata.cloud --max-segments 5
+
+# E2E con navegador (requiere Chrome compatible con H.264/AAC)
+node scripts/e2e.mjs --browser --max-segments 5
+```
+
+El harness E2E distingue dos niveles: la fase HTTP comprueba la resolución del DAG HLS; `--browser` añade comprobaciones de reproducción y metadata en Chromium/Chrome. Una prueba contra un fixture público no sustituye una prueba completa de publicación VOD o de emisión live con infraestructura propia.
+
+El workflow de CI está en [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Consulta la pestaña Actions para ver el resultado del último commit; la existencia del workflow no implica por sí sola que una ejecución haya pasado.
+
+## Configuración importante: gateway IPFS
+
+El código del proyecto espera por defecto el gateway HTTP de Kubo en `http://127.0.0.1:8080`. Comprueba la configuración local:
 
 ```bash
 ipfs config Addresses.Gateway
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/ipfs/<CID>/master.m3u8
 ```
 
-### Vídeos antiguos con rutas de segmento rotas
+El API RPC de Kubo usa por defecto `http://localhost:5001`. Son endpoints distintos: RPC para operaciones de publicación y gateway HTTP para recuperar contenido.
 
-Los vídeos publicados **antes** del arreglo de `ingest.go` tienen playlists
-variantes con el prefijo duplicado (`/v0/index.m3u8` →
-`v0/seg-000.ts` → HLS pide `/v0/v0/seg-000.ts` → 404). El código actual ya lo
-genera bien; **hay que volver a subir esos vídeos**.
+## Seguridad y despliegue
+
+- No expongas el API RPC de Kubo (`:5001`) a Internet.
+- Configura autenticación de administración antes de exponer el daemon. Usa `--auth-enabled` o `--admin-token`; guarda los secretos fuera del repositorio.
+- Cuando se inicializa un administrador, el daemon muestra una contraseña temporal por consola y exige cambio de contraseña. Trátala como un secreto.
+- Revisa CORS, TLS, límites de subida, almacenamiento, rate limits y reglas de red antes de desplegar públicamente.
+- El pinning local no garantiza disponibilidad si el nodo se apaga. Para persistencia externa se necesita un proveedor de pinning remoto o nodos propios adicionales.
+- El proyecto no incluye DRM ni garantiza protección contra copia del contenido.
 
 ## Documentación
 
-- [docs/architecture.md](docs/architecture.md) — arquitectura del sistema,
-  flujos de publicación y reproducción, diagramas (Mermaid), ADRs.
-- [docs/workflow.md](docs/workflow.md) — flujo de trabajo de desarrollo,
-  verificación E2E y CI.
-
-## Estructura del repo
-
-```
-IberCast/
-├── ibercastd/        # daemon Go: ingest, HLS, IPFS publish, API (Fase 1)
-├── player/           # cliente TS: Helia + hls.js loader P2P (Fase 2)
-├── scripts/          # e2e.mjs: verificación contra fixtures públicos
-├── docs/             # arquitectura y flujos de trabajo
-└── .github/          # CI (typecheck+build player, go test daemon)
-```
-
-## Cómo probar
-
-```bash
-# 1. Arranca Kubo local (gateway en 8080 — ver aviso arriba)
-ipfs daemon
-
-# 2. Publica un vídeo
-cd ibercastd && go build -o ibercastd .
-./ibercastd serve --port 8585
-
-# En otra terminal, sube un vídeo:
-curl -X POST http://localhost:8585/api/videos \
-  -F "title=My Video" \
-  -F "file=@video.mp4"
-
-# 3. Sirve el player
-cd player && npm run dev
-# abre http://localhost:5173/?mode=viewer&api=http://localhost:8585
-```
-
-## Pinning remoto
-
-Para que el contenido sea accesible incluso si el nodo local se apaga, usa pinning remoto:
-
-```bash
-# 1. Registrar un servicio de pinning
-ipfs pin remote service add pinata https://api.pinata.cloud <JWT>
-ipfs pin remote service add filebase https://api.filebase.io <TOKEN>
-
-# 2. Pinrear un CID publicado
-node scripts/pin-remote.mjs --cid <CID> --service pinata --name "video-1"
-```
-
-Servicios compatibles (plan free sin tarjeta):
-- **Pinata**: 1 GB gratis, https://api.pinata.cloud
-- **Filebase**: 5 GB gratis, https://api.filebase.io
-- **Storacha**: 5 GB gratis, https://api.web3.storage
+- [Arquitectura](docs/architecture.md)
+- [Flujo de desarrollo y verificación](docs/workflow.md)
+- [Workflow CI](.github/workflows/ci.yml)
 
 ## Licencia
 
-Por decidir (MIT o Apache-2.0).
-
-## Estado
-
-🚧 Pre-lanzamiento — README y roadmap vivos, código por llegar.
-
-> Estado real: `ibercastd` + `player` + MediaMTX funcionando con live
-> streaming local (OBS/ffmpeg → RTMP → HLS → wall/player) y VOD; repo
-> subido a GitHub (github.com/aratan/IberCast). Roadmap de arriba se
-> actualiza contra el código en cada fase.
+Aún no se ha definido una licencia. El uso y la redistribución deben acordarse antes de considerar el proyecto como software de código abierto.

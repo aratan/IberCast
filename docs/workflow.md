@@ -1,166 +1,101 @@
 # IberCast — Flujo de trabajo
 
-> Cómo se desarrolla, se verifica y se publica IberCast.
-> Complemento operativo de [architecture.md](architecture.md).
+> Guía operativa de desarrollo y verificación. Complementa [architecture.md](architecture.md).
 
 ## 1. Mapa del repositorio
 
-```mermaid
-flowchart LR
-    R[repo IberCast] --> README[README.md<br/>objetivos + roadmap]
-    R --> DOCS[docs/<br/>arquitectura y flujos]
-    R --> PL[player/<br/>TypeScript + Vite]
-    R --> DAEMON[ibercastd/<br/>Go · Fase 1 · por construir]
-    R --> SCR[scripts/<br/>e2e.mjs]
-    R --> CI[.github/workflows/<br/>ci.yml]
-```
+- `ibercastd/`: daemon HTTP en Go, API, autenticación, persistencia y flujos VOD/live.
+- `player/`: reproductor web TypeScript/Vite, hls.js y Helia.
+- `scripts/e2e.mjs`: comprobación del DAG HLS por gateway; navegador opcional.
+- `deploy/`, `mediamtx.yml` y `run.sh`: configuración y arranque del entorno local.
+- `.github/workflows/ci.yml`: validaciones automáticas del player y del daemon.
 
-## 2. Ciclo de desarrollo
+## 2. Requisitos
 
-```mermaid
-flowchart TD
-    A[cambio en player/ o ibercastd/] --> B{¿qué toque?}
-    B -->|player| C[npx tsc --noEmit<br/>en player/]
-    C --> D[npx vite build]
-    D --> E{¿verificación E2E?}
-    E -->|sí| F[node scripts/e2e.mjs<br/>--browser opcional]
-    B -->|daemon futuro| G[go vet ./...<br/>go test ./...]
-    F --> H[commit]
-    G --> H
-    H --> I[push a main]
-    I --> J[GitHub Actions CI<br/>debe quedar verde]
-```
+- Go 1.26 o toolchain compatible con la directiva de `ibercastd/go.mod`.
+- Node.js 20 o superior y npm.
+- FFmpeg.
+- Kubo/IPFS para publicación VOD y recuperación mediante gateway.
+- MediaMTX para ingestión RTMP/live.
+- Chrome/Chromium compatible con los codecs del vídeo si se ejecuta E2E en navegador.
 
-Comandos rápidos:
+No es necesario instalar OBS para compilar o probar VOD; OBS es solo una posible fuente RTMP para pruebas live.
+
+## 3. Validación local
+
+Desde la raíz del repositorio:
 
 ```bash
-# player
-cd player && npm install
-npx tsc --noEmit && npx vite build
+# Daemon
+cd ibercastd
+go vet ./...
+go test ./...
+go build ./...
+cd ..
 
-# E2E fase A (DAG por gateway, con límite de segmentos)
-node scripts/e2e.mjs --gw https://ipfs.io --max-segments 5
+# Player
+cd player
+npm ci
+npm run typecheck
+npm run build
+cd ..
 
-# E2E con navegador headless (si hay chromium disponible)
+# DAG HLS mediante gateway público (usa un fixture por defecto)
+node scripts/e2e.mjs --gw https://gateway.pinata.cloud --max-segments 5
+
+# Reproducción real en navegador; requiere Chrome con codecs compatibles
 node scripts/e2e.mjs --browser --max-segments 5
-
-# daemon (cuando exista)
-cd ibercastd && go vet ./... && go test ./...
 ```
 
-## 3. E2E: qué se verifica
+El E2E tiene dos alcances distintos:
 
-```mermaid
-flowchart TD
-    subgraph FaseA["Fase A — contrato del DAG (HTTP)"]
-        A1[GET master.m3u8] --> A2[parsing: entradas relativas]
-        A2 --> A3[GET playlists/segmentos<br/>en paralelo, límite N]
-        A3 --> A4[200 OK + bytes > 0<br/>por cada recurso]
-    end
+- **Fase A (HTTP):** obtiene el manifiesto, resuelve playlists y descarga una muestra limitada de segmentos. Comprueba el acceso al DAG por gateway y las rutas HLS.
+- **Fase B (navegador, `--browser`):** carga el player en un navegador y consulta los hooks `window.__IBER__` para verificar manifiesto, metadata y métricas.
 
-    subgraph FaseB["Fase B — navegador real (opcional)"]
-        B1[sirve player/dist] --> B2[chromium headless<br/>?cid=...&gw=...]
-        B2 --> B3{window.__IBER__}
-        B3 --> B4[manifest parsed<br/>levels > 0]
-        B3 --> B5[videoWidth > 0<br/>metadata lista]
-        B3 --> B6[fetchStats: contadores<br/>p2p/http/cache]
-    end
+Un resultado positivo contra un fixture público no demuestra por sí solo que una instalación nueva pueda publicar VOD, emitir RTMP o mantener una swarm P2P. Esas rutas requieren pruebas integradas con Kubo, FFmpeg, MediaMTX y peers reales.
 
-    FaseA --> FaseB
-```
+## 4. Arranque integrado
 
-Fixtures públicos de referencia (Big Buck Bunny, playlists planas):
-
-- `QmdpAidwAsBGptFB3b6A9Pyi5coEbgjHrL3K2Qrsutmj9K` — vía [ipfsvideo.cc](https://ipfsvideo.cc)
-- El gateway debe devolver CORS `*`. En la práctica: `ipfs.io`/`dweb.link`
-  comparten infra y aplican 429 por IP; `gateway.pinata.cloud` es fiable.
-
-Requisitos de la Fase B (aprendidos a las malas):
-
-1. **Navegador con codecs propietarios**: Chrome for Testing / branded
-   Chrome. El chromium open-source de Playwright no decodifica H.264/AAC
-   (falla con `fragParsingError`).
-2. **`--host-resolver-rules` con IPv4**: si el entorno tiene IPv6 roto,
-   chromium muere donde curl hace fallback; el harness mapea los hosts a
-   sus A-records vía DNS al arrancar.
-3. **Helia puede no arrancar** en sandboxes (WSS bootstrap a dnsaddr sin
-   A-records cuelga). El player degrada a solo-gateway y el E2E lo acepta.
-
-Estado actual (2026-09-04): **E2E OK en verde** — reproducción real vía
-loader custom (caché → P2P condicionado a peers → XhrLoader gateway),
-video 320×180, 596 s, sin errores HLS.
-
-## 4. CI (GitHub Actions)
-
-| Job | Disparo | Pasos |
-|---|---|---|
-| `player` | push/PR | npm ci → `tsc --noEmit` → `vite build` |
-| `daemon` | push/PR | (se activa cuando exista `ibercastd/go.mod`) go vet → go build → go test |
-
-El job del daemon queda definido en `.github/workflows/ci.yml` con un guard
-`if: hashFiles('ibercastd/go.mod') != ''` para no fallar hasta que exista.
-
-## 5. Flujo de publicación de contenido (uso final, Fase 1)
-
-```mermaid
-sequenceDiagram
-    actor Creador
-    participant D as ibercastd
-    participant K as Kubo/IPFS
-    participant R as Servicio pinning remoto
-    participant P as Espectadores (player)
-
-    Creador->>D: ibercastd publish --input video.mp4
-    D->>K: add + pin del DAG HLS (local)
-    K-->>D: rootCID
-    D->>R: pin remote add (persistencia ajena)
-    R-->>D: ok
-    D-->>Creador: URL del player: /?cid=<rootCID>
-    Creador->>P: comparte la URL
-    P->>K: manifiesto (gateway) + bloques (bitswap)
-```
-
-### 5.1 Persistencia: por qué el pin local no basta
-
-`ipfs add` + `ipfs pin add` guarda el contenido **solo en tu nodo Kubo**. Si
-ese nodo se apaga o pierde conectividad, el contenido deja de ser accesible
-en la red aunque el CID exista. El DHT solo anuncia tu peer como proveedor.
-
-Para que "cualquiera lo vea siempre" hace falta que **otro nodo ajeno**
-tenga los bloques. Ese es el **pinning remoto** (`ipfs pin remote`): pides a
-un servicio de pinning (Pinata, Filebase, Storacha, etc.) que guarde una
-copia persistente. Mientras el servicio esté en pie y pagues/estés en el
-plan free, el contenido se sirve desde esos nodos aunque apagues el tuyo.
-
-### 5.2 Pinning remoto manual (Kubo 0.43+)
+`run.sh` puede iniciar MediaMTX, Kubo, compilar y arrancar `ibercastd`, y lanzar Vite. Revisa sus dependencias y opciones antes de ejecutarlo:
 
 ```bash
-# 1. Registrar un servicio (endpoint + token del proveedor)
-ipfs pin remote service add <nombre> <endpoint> <token>
-#    Pinata:    https://api.pinata.cloud   (Bearer <JWT>)
-#    Filebase:  https://api.filebase.io     (Bearer <TOKEN>)
-#    Storacha:  https://api.web3.storage    (Bearer <TOKEN>)
-
-# 2. Pinear un CID en el servicio remoto
-ipfs pin remote add --service=<nombre> --name=<etiqueta> <rootCID>
-
-# 3. Verificar
-ipfs pin remote ls --service=<nombre>
-
-# 4. Comprobar que sobrevive a apagar tu nodo:
-#    apaga `ipfs daemon` y prueba el gateway público:
-#    curl -I https://ipfs.io/ipfs/<rootCID>/master.m3u8  → 200
+./run.sh
+./run.sh --no-live
+./run.sh --no-ipfs
+./run.sh --no-player
+./run.sh --daemon-only
 ```
 
-Requisitos del proveedor: un sign-up del plan free sin tarjeta (Filebase 5 GB,
-Pinata 1 GB, Storacha 5 GB). El resto del flujo (2) es idéntico.
+El lanzador necesita `ffmpeg`, `go` y `npm`; Kubo y MediaMTX se omiten con las opciones correspondientes. MediaMTX también se omite si no está disponible en `bin/mediamtx`.
 
+## 5. CI
 
-## 6. Convenciones
+El workflow `.github/workflows/ci.yml` contiene:
 
-- **Commits:** mensaje en inglés, imperativo, cuerpo explicando el porqué.
-- **Rutas en playlists:** siempre relativas (contrato del loader, ver
-  [architecture.md §3.1](architecture.md)).
-- **Secrets:** nunca en el repo; `.env` está gitignoreado.
-- **Ramas:** trabajo directo en `main` mientras el equipo es pequeño; PR en
-  cuanto haya más de un contributor.
+| Job | Validaciones |
+|---|---|
+| Player | Node 20, `npm ci`, `npx tsc --noEmit`, `npx vite build` |
+| Daemon | Si existe `ibercastd/go.mod`: Go estable, `go vet ./...`, `go build ./...`, `go test ./...` |
+
+El workflow se dispara con push a `main` y con pull requests. Por tanto, los cambios de una rama de trabajo se validan al abrir un PR; no debe darse por superada la CI hasta comprobar el resultado en la pestaña Actions.
+
+## 6. Publicación y persistencia
+
+El flujo VOD implementado en el daemon usa FFmpeg para generar HLS y Kubo RPC para publicar el contenido. El CID raíz permite recuperar el DAG mediante un gateway o un nodo IPFS.
+
+El pinning local solo protege el contenido en el nodo local. Para mantener disponibilidad cuando ese nodo se apaga, hay que replicar/pinear el CID en otro nodo o en un proveedor remoto. No se debe asumir que el pinning remoto está configurado por el mero hecho de que el proyecto soporte IPFS.
+
+## 7. Seguridad antes de exponer el servicio
+
+- No expongas el RPC de Kubo (`:5001`) a Internet.
+- Activa autenticación de administración mediante `--auth-enabled`, `--admin-token` o las variables de entorno documentadas en `ibercastd/internal/config/config.go`.
+- Si se genera el administrador inicial, la contraseña temporal se muestra en la consola y exige cambio; no la compartas ni la guardes en el repositorio.
+- Configura TLS, CORS restrictivo para el dominio real del player, rate limiting, límites de subida y copias de seguridad antes de publicar el servicio.
+- No guardes tokens de pinning, claves RTMP ni credenciales en el repositorio.
+
+## 8. Convenciones
+
+- Commits en inglés, en imperativo, explicando el motivo cuando el cambio no sea obvio.
+- Mantener las rutas de playlists HLS relativas: el player depende de ese contrato para resolver segmentos dentro del CID.
+- No subir secretos, datos de usuarios ni vídeos privados a fixtures públicos.
+- Trabajar en ramas y abrir PR para que CI valide los cambios antes de integrarlos en `main`.
