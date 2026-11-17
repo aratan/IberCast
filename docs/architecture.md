@@ -1,6 +1,6 @@
 # IberCast — Arquitectura
 
-> Documentación viva. Última actualización: 2026-09-04.
+ > Documentación de arquitectura. Revisar junto con el código y el workflow de verificación.
 
 ## 1. Visión general
 
@@ -41,14 +41,14 @@ carga sobre el gateway de origen.
 
 | Componente | Repo/lang | Estado | Responsabilidad |
 |---|---|---|---|
-| `ibercastd` | Go | 📋 diseñado (Fase 1) | Ingest: transcodificar a HLS, empaquetar a CAR, publicar en IPFS, API admin |
-| `player` | TypeScript | ✅ scaffold con build verde (Fase 2) | Reproducir cualquier CID publicado; loader P2P-first con fallback a gateway |
+| `ibercastd` | Go | Implementado en el repositorio; validar con CI y pruebas integradas | API HTTP, persistencia, autenticación, publicación VOD e ingestión live |
+| `player` | TypeScript | Implementado; build/typecheck en CI | Reproducción HLS con loader personalizado, Helia y fallback a gateway |
 | `docs/` | Markdown | ✅ | Arquitectura, flujos y decisiones |
-| `scripts/e2e.mjs` | Node | 🧪 en curso | Verificación E2E contra fixtures públicos |
+| `scripts/e2e.mjs` | Node | Harness disponible; ejecutar localmente para verificar | Comprueba el DAG HLS por HTTP y añade comprobaciones de navegador con `--browser` |
 
-### 2.1 ibercastd (Go) — diseño
+### 2.1 ibercastd (Go) — implementación
 
-Un único binario sin dependencias de runtime (FFmpeg debe existir en el PATH).
+El daemon se compila como binario Go. FFmpeg, Kubo y MediaMTX son servicios/dependencias externas para los flujos que los necesitan; el binario no los incorpora.
 
 ```
 ibercastd/
@@ -62,7 +62,7 @@ ibercastd/
 │   └── store/           # registro persistente de canales publicados
 ```
 
-### 2.2 player (TypeScript) — implementado
+### 2.2 player (TypeScript) — implementación
 
 ```
 player/src/
